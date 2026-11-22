@@ -1,0 +1,108 @@
+// =============================================================================
+// commands.ts  —  Every way the UI is allowed to change the world.
+//
+// The browser never edits the Platform directly. It POSTs a `Command` to
+// /api/control; the server calls `applyCommand`, which validates the input,
+// mutates the world, and logs an event. One chokepoint = one place to validate,
+// one place to log, and a clear list of "what can a user do" for the UI to bind.
+//
+// Add a new variant to `Command` + a case in `applyCommand` for every new
+// control (chaos, deploy, schedule ...). TypeScript's exhaustiveness check at the
+// bottom of the switch will tell you if you forget one.
+// =============================================================================
+
+import { clamp } from "./ids";
+import { log } from "./tick";
+import type { AutoscaleConfig, LbAlgo, Pattern, Platform, Service } from "./types";
+
+export type Command =
+  | { type: "setTraffic"; serviceId: string; rps: number } // move the base-load slider
+  | { type: "adjustTraffic"; serviceId: string; delta: number } // +/- buttons
+  | { type: "stopTraffic"; serviceId: string } // base load -> 0, pattern -> flat
+  | { type: "setPattern"; serviceId: string; pattern: Pattern }
+  | { type: "setSpeed"; speed: 1 | 5 | 60 }
+  | {
+      type: "updateAutoscale";
+      serviceId: string;
+      patch: Partial<Omit<AutoscaleConfig, "lb">> & { lb?: LbAlgo };
+    }
+  | { type: "reset" };
+
+export const MAX_RPS = 5000; // hard ceiling so a slider typo can't produce 1e9 RPS
+
+function find(p: Platform, id: string): Service {
+  const svc = p.services.find((s) => s.id === id);
+  if (!svc) throw new Error(`Unknown service: ${id}`);
+  return svc;
+}
+
+/** Mutates `p` in place. Throws Error(message) on invalid input (API maps to 400). */
+export function applyCommand(p: Platform, cmd: Command): void {
+  switch (cmd.type) {
+    case "setTraffic": {
+      const svc = find(p, cmd.serviceId);
+      svc.targetRps = clamp(Math.round(cmd.rps), 0, MAX_RPS);
+      log(p, svc.id, "info", `Traffic set to ${svc.targetRps} req/s.`);
+      return;
+    }
+    case "adjustTraffic": {
+      const svc = find(p, cmd.serviceId);
+      svc.targetRps = clamp(Math.round(svc.targetRps + cmd.delta), 0, MAX_RPS);
+      log(
+        p,
+        svc.id,
+        "info",
+        `Traffic ${cmd.delta >= 0 ? "increased" : "decreased"} to ${svc.targetRps} req/s.`,
+      );
+      return;
+    }
+    case "stopTraffic": {
+      const svc = find(p, cmd.serviceId);
+      svc.targetRps = 0;
+      svc.pattern = "flat";
+      svc.patternTick = 0;
+      // "info", not "warn": this is the user's own action, and warnings become
+      // pop-ups. Nobody needs a notification for a button they just pressed.
+      log(p, svc.id, "info", "Traffic stopped.");
+      return;
+    }
+    case "setPattern": {
+      const svc = find(p, cmd.serviceId);
+      svc.pattern = cmd.pattern;
+      svc.patternTick = 0; // restart the pattern's local clock
+      log(p, svc.id, "info", `Traffic pattern: ${cmd.pattern}.`);
+      return;
+    }
+    case "setSpeed": {
+      if (![1, 5, 60].includes(cmd.speed)) throw new Error("speed must be 1, 5 or 60");
+      p.speed = cmd.speed;
+      log(p, "platform", "info", `Simulation speed set to ${cmd.speed}x.`);
+      return;
+    }
+    case "updateAutoscale": {
+      const svc = find(p, cmd.serviceId);
+      const a = svc.autoscale;
+      const { patch } = cmd;
+      if (patch.min !== undefined) a.min = clamp(Math.round(patch.min), 0, 100);
+      if (patch.max !== undefined) a.max = clamp(Math.round(patch.max), 1, 100);
+      if (patch.rpsPerInstance !== undefined)
+        a.rpsPerInstance = clamp(Math.round(patch.rpsPerInstance), 1, 10000);
+      if (patch.scaleUpAt !== undefined) a.scaleUpAt = clamp(patch.scaleUpAt, 1, 100);
+      if (patch.scaleDownAt !== undefined) a.scaleDownAt = clamp(patch.scaleDownAt, 0, 99);
+      if (patch.cooldownTicks !== undefined)
+        a.cooldownTicks = clamp(Math.round(patch.cooldownTicks), 0, 120);
+      if (patch.lb !== undefined) a.lb = patch.lb;
+      // Keep the config self-consistent so the autoscaler never sees nonsense.
+      if (a.min > a.max) a.min = a.max;
+      if (a.scaleDownAt >= a.scaleUpAt) a.scaleDownAt = Math.max(0, a.scaleUpAt - 1);
+      log(p, svc.id, "info", "Autoscaling configuration updated.");
+      return;
+    }
+    case "reset":
+      throw new Error("reset is handled by the route (it replaces the whole world)");
+    default: {
+      const _exhaustive: never = cmd;
+      throw new Error(`Unhandled command: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}

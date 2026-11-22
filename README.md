@@ -1,36 +1,43 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Cloud Autoscale Simulator
 
-## Getting Started
+A one-page, fully **simulated** cloud platform. Push traffic at a service and watch
+it autoscale, load-balance, log events and heal itself. Free to run, free to host.
 
-First, run the development server:
+> Everything is simulated in TypeScript. No real requests are sent anywhere.
+
+## Run locally
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+No setup needed: locally the world is kept in memory.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How it works (read in this order)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| File | What it teaches |
+|------|-----------------|
+| `lib/engine/types.ts` | The world model: `Platform` > `Service` > `Instance` |
+| `lib/engine/tick.ts` | One simulation step. The heart of everything |
+| `lib/engine/traffic.ts` | Traffic patterns (flat, spike, ramp, sine, noise) |
+| `lib/engine/metrics.ts` | Utilisation, p95 latency, error rate, cost |
+| `lib/engine/autoscaler.ts` | The scaling decision (**you write this**) |
+| `lib/engine/nginx.ts` | Generates the `nginx.conf` for the live instances |
+| `lib/engine/commands.ts` | Every action the UI can perform |
+| `lib/store.ts` | Memory locally, Upstash Redis in production |
+| `app/api/sim`, `app/api/control` | Poll the world / change the world |
 
-## Learn More
+### The key idea: tick-on-read
 
-To learn more about Next.js, take a look at the following resources:
+Vercel has no background process, so time only moves when someone polls. Each
+`GET /api/sim` works out how many seconds passed since the last poll, runs that many
+`tick()` steps, saves the world, and returns it.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploy free
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Create a free database at [Upstash](https://upstash.com) (Redis).
+2. Push this repo to GitHub, import it in [Vercel](https://vercel.com).
+3. Add env vars `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+All visitors then share one live world.

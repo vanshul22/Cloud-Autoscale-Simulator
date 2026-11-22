@@ -2,20 +2,143 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ---------------------------------------------------------------------------
+   Theme: "night shift ops console".
+   Deep blue-black surfaces, one phosphor-teal accent, and traffic-light status
+   colours that are only ever paired with text (colour is never the only signal).
 
-@media (prefers-color-scheme: dark) {
+   IMPORTANT: tailwind.config.ts wraps every token as `hsl(var(--token))`, so the
+   variables below are bare HSL *channels* ("H S% L%"), not full colour values.
+   (The original shadcn init wrote oklch() values, which hsl() cannot parse, so
+   every colour fell back to "none".) Read them in CSS/Recharts as
+   `hsl(var(--chart-1))`, and with opacity as `hsl(var(--chart-1) / 0.4)`.
+   --------------------------------------------------------------------------- */
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Light fallback (the app forces .dark on <html>, but keep it coherent). */
+    --background: 210 25% 97%;
+    --foreground: 222 30% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 30% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 30% 10%;
+    --primary: 174 80% 26%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 20% 93%;
+    --secondary-foreground: 222 30% 14%;
+    --muted: 214 20% 93%;
+    --muted-foreground: 218 14% 38%;
+    --accent: 214 20% 91%;
+    --accent-foreground: 222 30% 14%;
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 18% 85%;
+    --input: 214 18% 85%;
+    --ring: 174 80% 30%;
+    --radius: 0.625rem;
+
+    /* Status palette (use with text labels). */
+    --success: 152 62% 30%;
+    --warning: 36 92% 36%;
+    --info: 199 80% 36%;
+
+    --chart-1: 174 80% 32%;
+    --chart-2: 36 92% 44%;
+    --chart-3: 262 60% 52%;
+    --chart-4: 340 70% 50%;
+    --chart-5: 199 80% 40%;
+
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 222 30% 10%;
+    --sidebar-primary: 174 80% 26%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 214 20% 93%;
+    --sidebar-accent-foreground: 222 30% 14%;
+    --sidebar-border: 214 18% 85%;
+    --sidebar-ring: 174 80% 30%;
+  }
+
+  .dark {
+    /* Surfaces step up in lightness: background < card < secondary/muted. */
+    --background: 222 32% 6%;
+    --foreground: 210 25% 94%;
+    --card: 222 28% 9%;
+    --card-foreground: 210 25% 94%;
+    --popover: 222 28% 10%;
+    --popover-foreground: 210 25% 94%;
+    --primary: 172 66% 52%; /* phosphor teal: the only brand accent */
+    --primary-foreground: 222 40% 6%;
+    --secondary: 221 22% 15%;
+    --secondary-foreground: 210 25% 92%;
+    --muted: 221 22% 13%;
+    --muted-foreground: 217 14% 68%; /* >= 4.5:1 on card */
+    --accent: 221 22% 17%;
+    --accent-foreground: 210 25% 96%;
+    --destructive: 0 80% 66%;
+    --destructive-foreground: 222 40% 6%;
+    --border: 220 20% 18%;
+    --input: 220 20% 20%;
+    --ring: 172 66% 52%;
+
+    --success: 152 64% 52%;
+    --warning: 38 95% 60%;
+    --info: 199 90% 64%;
+
+    /* Categorical series for charts: distinguishable by hue AND lightness. */
+    --chart-1: 172 66% 52%; /* teal   : requests / primary series */
+    --chart-2: 38 95% 60%; /* amber  : latency */
+    --chart-3: 262 85% 74%; /* violet : instances */
+    --chart-4: 350 85% 68%; /* rose   : errors */
+    --chart-5: 199 90% 64%; /* sky    : utilisation / extra */
+
+    --sidebar: 222 28% 9%;
+    --sidebar-foreground: 210 25% 94%;
+    --sidebar-primary: 172 66% 52%;
+    --sidebar-primary-foreground: 222 40% 6%;
+    --sidebar-accent: 221 22% 17%;
+    --sidebar-accent-foreground: 210 25% 96%;
+    --sidebar-border: 220 20% 18%;
+    --sidebar-ring: 172 66% 52%;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* Geist variables are attached to <body> in layout.tsx. */
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    /* A faint teal glow at the top plus a dot grid gives the page depth
+       without competing with the data. `fixed` so it does not scroll. */
+    background-image:
+      radial-gradient(ellipse 80% 40% at 50% -10%, hsl(var(--primary) / 0.1), transparent),
+      radial-gradient(hsl(var(--foreground) / 0.05) 1px, transparent 1px);
+    background-size: auto, 24px 24px;
+    background-attachment: fixed;
+  }
+  /* Numbers should not jiggle as digits change width. */
+  body {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  /* tailwind.config.ts has no fontFamily, so wire `font-mono` to Geist Mono here. */
+  .font-mono {
+    font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+}
+
+/* Respect users who ask the OS for less motion: kill transitions/animations. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

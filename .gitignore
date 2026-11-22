@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local tool state (Claude Code plugin data), not part of the app
+/.claude-flow/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
