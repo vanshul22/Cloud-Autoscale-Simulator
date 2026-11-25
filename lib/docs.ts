@@ -205,6 +205,55 @@ export const DOCS: TabDoc[] = [
       { path: "lib/engine/tick.ts", what: "runs the queue each tick" },
     ],
   },
+  {
+    slug: "reliability",
+    title: "Reliability",
+    tagline: "Break things on purpose and watch the platform detect, remove, restart and recover.",
+    tryIt: [
+      "Press Kill a random instance. Watch the timeline: a burst of errors, then the instance is pulled from nginx and restarted.",
+      "Inject Slow x3 on one instance, then Slow x10 on another. The x3 one stays in rotation; the x10 one fails its readiness check and is removed.",
+      "Set Max restarts to 1 and keep crashing the same instance until it is declared crash-looping.",
+    ],
+    sections: [
+      {
+        heading: "How a failure plays out",
+        items: [
+          "Nothing is detected instantly. For a couple of ticks nginx still sends traffic to the dead instance, and those requests fail. That is the error burst you see.",
+          "Health checks then fail several times in a row and the instance is pulled out of the nginx upstream.",
+          "A dead instance (crash, OOM) fails its liveness check, so it is restarted. The wait before each restart doubles (2, 4, 8 ticks...), so a broken instance cannot restart in a tight loop.",
+          "A slow or erroring instance fails its readiness check instead: it is taken out of rotation but not restarted, and is re-checked every tick. It rejoins once it passes.",
+          "After Max restarts it is declared crash-looping and left out. If capacity is short, the autoscaler adds a replacement.",
+        ],
+      },
+      {
+        heading: "Circuit breaker",
+        items: [
+          "If the failure rate stays above the trip level for 3 ticks, the breaker opens: requests are refused instantly instead of piling onto struggling instances.",
+          "After a pause it goes half-open and lets 20% of traffic through. If that goes well it closes; if not, it opens again.",
+          "A breaker cannot fix a capacity shortage. If overload persists, it keeps tripping.",
+        ],
+      },
+      {
+        heading: "Settings",
+        items: [
+          "Failed checks before removal: how patient health checks are. Lower reacts faster but risks removing a healthy instance on a blip.",
+          "Restart backoff and Max restarts: how quickly and how many times to retry a broken instance.",
+          "Slow x that fails readiness: how many times slower than normal an instance may be before it is taken out of rotation.",
+        ],
+      },
+      {
+        heading: "Known limit",
+        items: [
+          "Faults are injected by hand. There is no random background failure, and slow or erroring faults end by themselves after the fault duration.",
+        ],
+      },
+    ],
+    files: [
+      { path: "components/tabs/Reliability.tsx", what: "this tab" },
+      { path: "lib/engine/healing.ts", what: "health checks, restarts, crash loops, circuit breaker" },
+      { path: "lib/engine/tick.ts", what: "runs the health step each tick" },
+    ],
+  },
 ];
 
 export function getDoc(slug: string): TabDoc | undefined {

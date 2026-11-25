@@ -65,7 +65,19 @@ export interface Instance {
   latencyFactor?: number;
 
   // When chaos injects a fault we remember it so the tick can act on it.
+  //   crash / oom : the process is dead. Until health checks notice, the load
+  //                 balancer keeps sending it traffic and every request fails.
+  //   latency     : answers slowly (see latencyFactor)
+  //   errors      : answers, but a share of responses are errors (errorFraction)
   fault?: "crash" | "oom" | "latency" | "errors";
+
+  // --- Self-healing bookkeeping (all optional: older saved worlds lack them) ---
+  faultTicksLeft?: number; // latency/errors faults are temporary and end by themselves
+  errorFraction?: number; // for "errors": the share of requests that fail, 0..1
+  failedChecks?: number; // consecutive failed health checks
+  restartCount?: number; // restarts since the last stable period (drives the backoff)
+  stableTicks?: number; // consecutive healthy ticks; long enough resets restartCount
+  downReason?: string; // why it is out of rotation, shown in the UI
 }
 
 // -----------------------------------------------------------------------------
@@ -151,7 +163,21 @@ export interface HealthConfig {
   restartBackoffTicks: number; // base backoff; doubles each restart (exponential)
   maxRestarts: number; // after this many failed restarts -> crashloop
   errorRateToTrip: number; // error % that opens the circuit breaker
-  circuitOpen: boolean; // when true, service sheds traffic to protect itself
+  circuitOpen: boolean; // mirror of `circuit === "open"`, kept for older readers
+
+  // Everything below is optional: worlds saved before the Reliability tab existed
+  // lack it, and healing.ts `normalizeHealth` fills in the defaults.
+  checkFailuresToEject?: number; // failed health checks in a row before an instance is pulled from nginx
+  readinessLatencyFactor?: number; // an instance this many times slower than normal fails readiness
+  faultDurationTicks?: number; // how long injected latency/error faults last
+  circuitEnabled?: boolean; // turn the circuit breaker on or off
+  circuitOpenTicks?: number; // how long the breaker stays open before testing again
+  circuit?: "closed" | "open" | "half-open";
+  circuitTicksLeft?: number; // ticks left in the current open / half-open phase
+  circuitBadTicks?: number; // consecutive ticks above the trip level while closed
+  lastErrRate?: number; // error % among ADMITTED requests last tick (what the breaker watches)
+  faultFailedNow?: number; // requests that hit a dead or erroring instance this tick
+  shedNow?: number; // requests the open breaker refused this tick (fail fast)
 }
 
 // -----------------------------------------------------------------------------
@@ -194,7 +220,11 @@ export interface SimEvent {
   // "status" marks a service's health changing (green/yellow/red). Only these
   // become pop-up notifications; every other event is log-only, so routine
   // activity (a scale-up, an instance booting) never interrupts you.
-  kind?: "status";
+  //
+  // "health" marks a step in a failure/recovery story (a check failed, an instance
+  // was pulled from nginx, a restart, the breaker opening). They feed the
+  // Reliability tab's timeline but are NOT pop-ups: toasts only show "status".
+  kind?: "status" | "health";
 }
 
 // -----------------------------------------------------------------------------

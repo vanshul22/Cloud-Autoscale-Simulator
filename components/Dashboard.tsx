@@ -5,6 +5,7 @@ import { AlertTriangle, BookOpen, Cloud, RotateCcw, Volume2, VolumeX } from "luc
 import { Overview } from "@/components/tabs/Overview";
 import { Cluster } from "@/components/tabs/Cluster";
 import { QueueTab } from "@/components/tabs/Queue";
+import { ReliabilityTab } from "@/components/tabs/Reliability";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "sonner";
@@ -18,7 +19,6 @@ import { cn } from "@/lib/utils";
 const SOON_TABS = [
   "Deployments",
   "Scheduled Scaling",
-  "Reliability",
   "Events & Alerts",
   "Config",
 ] as const;
@@ -27,7 +27,7 @@ const SPEEDS = [1, 5, 60] as const;
 
 // The tabs that are actually built. A URL asking for any other tab (a typo, or a
 // "soon" tab) falls back to Overview instead of showing an empty page.
-const TABS = ["overview", "cluster", "queue"] as const;
+const TABS = ["overview", "cluster", "queue", "reliability"] as const;
 
 /** 0..1439 minutes since midnight -> "HH:MM". */
 function formatClock(mins: number): string {
@@ -174,6 +174,9 @@ export function Dashboard() {
               <TabsTrigger value="queue" className="data-[state=active]:bg-accent">
                 Queue &amp; Workers
               </TabsTrigger>
+              <TabsTrigger value="reliability" className="data-[state=active]:bg-accent">
+                Reliability
+              </TabsTrigger>
               {SOON_TABS.map((name) => (
                 <TabsTrigger key={name} value={name} disabled className="gap-1.5">
                   {name}
@@ -199,6 +202,9 @@ export function Dashboard() {
           </TabsContent>
           <TabsContent value="queue" className="mt-4">
             <QueueTab platform={platform} serviceId={serviceId} onSelectService={setServiceParam} send={send} />
+          </TabsContent>
+          <TabsContent value="reliability" className="mt-4">
+            <ReliabilityTab platform={platform} serviceId={serviceId} onSelectService={setServiceParam} send={send} />
           </TabsContent>
         </Tabs>
       ) : null}

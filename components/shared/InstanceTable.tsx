@@ -154,6 +154,18 @@ export function InstanceTable({
                             slow x{slow}
                           </span>
                         )}
+                        {/* A dead instance keeps the "healthy" status until health checks
+                            notice, so say so in words. Erroring ones show their failure share. */}
+                        {inst.status === "healthy" && (inst.fault === "crash" || inst.fault === "oom") && (
+                          <span className="whitespace-nowrap text-xs font-medium text-red-700 dark:text-red-400">
+                            dead, undetected
+                          </span>
+                        )}
+                        {inst.fault === "errors" && (
+                          <span className="whitespace-nowrap text-xs font-medium text-orange-700 dark:text-orange-400">
+                            errors {Math.round((inst.errorFraction ?? 0) * 100)}%
+                          </span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>

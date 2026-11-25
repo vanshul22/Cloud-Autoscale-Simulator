@@ -54,7 +54,11 @@ export function p95LatencyMs(svc: Service): number {
   // The tail is set by the WORST instance, not the average: if one instance is
   // overloaded or slow, the unlucky requests it serves define p95. With evenly
   // loaded identical instances this equals the fleet-wide figure.
-  const serving = servingInstances(svc.instances);
+  // A dead instance answers nothing (its requests fail fast), so it has no latency
+  // to report; only instances that actually respond count toward the tail.
+  const serving = servingInstances(svc.instances).filter(
+    (i) => i.fault !== "crash" && i.fault !== "oom",
+  );
   let serviceMs: number;
   if (serving.length === 0) {
     serviceMs = 1500; // nothing is serving: report the saturated figure
@@ -72,10 +76,9 @@ export function p95LatencyMs(svc: Service): number {
 }
 
 /**
- * Error rate %: the share of this tick's requests that FAILED, meaning the queue
- * was full and refused them (HTTP 429) or they waited, retried and finally gave up
- * (moved to the dead-letter queue). Overflow the queue is still holding is NOT an
- * error yet: it shows up as latency instead, until it overflows or times out.
+ * Error rate %: the share of this tick's requests that FAILED. Overflow the queue
+ * is still holding is NOT an error yet: it shows up as latency instead, until it
+ * overflows or times out.
  */
 export function errorRatePct(svc: Service): number {
   if (svc.currentRps <= 0) return 0;
@@ -87,7 +90,10 @@ export function errorRatePct(svc: Service): number {
     if (cap === 0) return 100;
     return clamp((Math.max(0, svc.currentRps - cap) / svc.currentRps) * 100, 0, 100);
   }
-  const failed = q.rejectedNow + (q.failedNow ?? 0);
+  // Everything that failed this tick: refused by a full queue, gave up after retries,
+  // sent to a dead/erroring instance, or refused instantly by an open circuit breaker.
+  const h = svc.health;
+  const failed = q.rejectedNow + (q.failedNow ?? 0) + (h.faultFailedNow ?? 0) + (h.shedNow ?? 0);
   return clamp((failed / svc.currentRps) * 100, 0, 100);
 }
 

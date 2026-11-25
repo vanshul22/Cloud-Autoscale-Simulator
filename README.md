@@ -28,6 +28,9 @@ the alert thresholds) lives in a small, commented TypeScript file.
 - **Overload it and watch the queue**: demand the servers can't handle waits in a queue, times
   out, retries with backoff, and ends up in a dead-letter queue (or is rejected with HTTP 429
   when the queue is full). You can replay or purge the dead letters.
+- **Break things on purpose**: crash, OOM-kill, slow down or corrupt an instance (or kill half
+  the fleet) and watch the platform notice, pull it from nginx, restart it with a doubling
+  backoff, give up on a crash loop, and trip a circuit breaker.
 - **Fast-forward time** (1x / 5x / 60x) and **share a link** to the exact view: the tab,
   service and log filter live in the URL.
 - **Read the docs in the app**: one short page per tab at `/docs`.
@@ -42,6 +45,12 @@ are retrying and landing in the dead-letter queue.
 
 ![Queue & Workers tab during a sustained overload](docs/images/queue.png)
 
+The **Reliability** tab the moment an instance crashes: it still shows as healthy ("dead,
+health check 0/2 failed") because nothing is detected instantly. Health checks then pull it
+out of nginx and restart it with a doubling backoff.
+
+![Reliability tab: fleet health with chaos buttons, circuit breaker and settings](docs/images/reliability.png)
+
 ## Try it in 30 seconds
 
 1. Open the **Autoscaling Cluster** tab and press **Spike** (or set traffic to 400 req/s).
@@ -53,12 +62,13 @@ are retrying and landing in the dead-letter queue.
 
 | Area | State |
 |---|---|
-| Overview, Autoscaling Cluster and Queue & Workers tabs | Built |
+| Overview, Autoscaling Cluster, Queue & Workers and Reliability tabs | Built |
+| Chaos and self-healing: crash/OOM/slow/error faults, health checks, restart with backoff, crash loops, circuit breaker | Built |
 | Autoscaler, traffic patterns, health status, notifications, docs | Built |
 | Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
 | Load balancer: round-robin, weighted and least-connections, with instance sizes, slow instances, and manual add/remove | Built |
-| Deployments, Scheduled Scaling, Reliability (chaos and self-healing), Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
+| Deployments, Scheduled Scaling, Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
 
 ## How it works
 
@@ -131,12 +141,12 @@ app/
   api/control        POST: apply one validated Command
   docs/              the in-app documentation routes
 components/
-  tabs/              Overview, Cluster, Queue
+  tabs/              Overview, Cluster, Queue, Reliability
   shared/            traffic controls, charts, instance table, event log, nginx view, config
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, balancer, queue, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, balancer, queue, healing, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

@@ -12,10 +12,20 @@
 // =============================================================================
 
 import { makeInstance } from "../defaults";
+import { clearFault as clearInstanceFault, normalizeHealth } from "./healing";
 import { clamp } from "./ids";
 import { normalizeQueue } from "./queue";
 import { log } from "./tick";
-import type { AutoscaleConfig, LbAlgo, Pattern, Platform, QueueState, Service } from "./types";
+import type {
+  AutoscaleConfig,
+  HealthConfig,
+  Instance,
+  LbAlgo,
+  Pattern,
+  Platform,
+  QueueState,
+  Service,
+} from "./types";
 
 export type Command =
   | { type: "setTraffic"; serviceId: string; rps: number } // move the base-load slider
@@ -35,6 +45,32 @@ export type Command =
     }
   | { type: "addInstance"; serviceId: string; size: number } // size 1 = standard, 2 = large...
   | { type: "removeInstance"; serviceId: string; instanceId: string } // graceful drain
+  | {
+      type: "injectFault"; // chaos: break one running instance
+      serviceId: string;
+      instanceId: string;
+      fault: "crash" | "oom" | "latency" | "errors";
+      severity?: number; // latency: how many times slower (2-20); errors: share failing (0.1-1)
+    }
+  | { type: "clearFault"; serviceId: string; instanceId: string } // undo latency/error faults
+  | { type: "chaos"; serviceId: string; action: "killRandom" | "killHalf" }
+  | {
+      type: "updateHealth";
+      serviceId: string;
+      patch: Partial<
+        Pick<
+          HealthConfig,
+          | "restartBackoffTicks"
+          | "maxRestarts"
+          | "errorRateToTrip"
+          | "checkFailuresToEject"
+          | "readinessLatencyFactor"
+          | "faultDurationTicks"
+          | "circuitEnabled"
+          | "circuitOpenTicks"
+        >
+      >;
+    }
   | { type: "replayDlq"; serviceId: string } // put dead-lettered requests back in line
   | { type: "purgeDlq"; serviceId: string } // discard dead-lettered requests
   | { type: "reset" };
@@ -46,6 +82,30 @@ function find(p: Platform, id: string): Service {
   const svc = p.services.find((s) => s.id === id);
   if (!svc) throw new Error(`Unknown service: ${id}`);
   return svc;
+}
+
+/** Apply a chaos fault to one running instance and log it for the Reliability timeline. */
+function breakInstance(
+  p: Platform,
+  svc: Service,
+  inst: Instance,
+  fault: "crash" | "oom" | "latency" | "errors",
+  severity: number | undefined,
+  durationTicks: number,
+): void {
+  inst.fault = fault;
+  inst.failedChecks = 0;
+  if (fault === "latency") {
+    inst.latencyFactor = clamp(severity ?? 5, 2, 20);
+    inst.faultTicksLeft = durationTicks;
+    log(p, svc.id, "warn", `Chaos: ${inst.id} is now ${inst.latencyFactor}x slower (for ${durationTicks} ticks).`, "health");
+  } else if (fault === "errors") {
+    inst.errorFraction = clamp(severity ?? 0.6, 0.1, 1);
+    inst.faultTicksLeft = durationTicks;
+    log(p, svc.id, "warn", `Chaos: ${inst.id} now fails ${Math.round(inst.errorFraction * 100)}% of its requests (for ${durationTicks} ticks).`, "health");
+  } else {
+    log(p, svc.id, "warn", `Chaos: ${inst.id} ${fault === "oom" ? "was OOM-killed" : "crashed"}.`, "health");
+  }
 }
 
 /** Mutates `p` in place. Throws Error(message) on invalid input (API maps to 400). */
@@ -131,6 +191,53 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (inst.status === "draining") throw new Error("That instance is already draining.");
       inst.status = "draining"; // finishes its goodbye tick, then tick.ts removes it
       log(p, svc.id, "info", `Instance ${inst.id} draining (removed by hand).`);
+      return;
+    }
+    case "injectFault": {
+      const svc = find(p, cmd.serviceId);
+      const h = (svc.health = normalizeHealth(svc.health));
+      const inst = svc.instances.find((i) => i.id === cmd.instanceId);
+      if (!inst) throw new Error(`Unknown instance: ${cmd.instanceId}`);
+      if (inst.status !== "healthy") throw new Error("Only a running instance can be hit by chaos.");
+      if (inst.fault) throw new Error(`${inst.id} already has a ${inst.fault} fault. Clear it first.`);
+      breakInstance(p, svc, inst, cmd.fault, cmd.severity, h.faultDurationTicks ?? 40);
+      return;
+    }
+    case "clearFault": {
+      const svc = find(p, cmd.serviceId);
+      const inst = svc.instances.find((i) => i.id === cmd.instanceId);
+      if (!inst) throw new Error(`Unknown instance: ${cmd.instanceId}`);
+      if (inst.fault !== "latency" && inst.fault !== "errors") {
+        throw new Error("Only slowness or error faults can be cleared. A crashed instance has to be restarted by the platform.");
+      }
+      clearInstanceFault(inst);
+      log(p, svc.id, "info", `Fault on ${inst.id} cleared by hand.`, "health");
+      return;
+    }
+    case "chaos": {
+      const svc = find(p, cmd.serviceId);
+      const h = (svc.health = normalizeHealth(svc.health));
+      const targets = svc.instances.filter((i) => i.status === "healthy" && !i.fault);
+      if (targets.length === 0) throw new Error("No healthy instance to hit.");
+      // Fisher-Yates-ish shuffle, then take one or half (rounded up).
+      const shuffled = [...targets].sort(() => Math.random() - 0.5);
+      const hit = cmd.action === "killHalf" ? shuffled.slice(0, Math.ceil(targets.length / 2)) : shuffled.slice(0, 1);
+      for (const inst of hit) breakInstance(p, svc, inst, "crash", undefined, h.faultDurationTicks ?? 40);
+      return;
+    }
+    case "updateHealth": {
+      const svc = find(p, cmd.serviceId);
+      const h = (svc.health = normalizeHealth(svc.health));
+      const { patch } = cmd;
+      if (patch.restartBackoffTicks !== undefined) h.restartBackoffTicks = clamp(Math.round(patch.restartBackoffTicks), 1, 30);
+      if (patch.maxRestarts !== undefined) h.maxRestarts = clamp(Math.round(patch.maxRestarts), 0, 10);
+      if (patch.errorRateToTrip !== undefined) h.errorRateToTrip = clamp(Math.round(patch.errorRateToTrip), 1, 100);
+      if (patch.checkFailuresToEject !== undefined) h.checkFailuresToEject = clamp(Math.round(patch.checkFailuresToEject), 1, 10);
+      if (patch.readinessLatencyFactor !== undefined) h.readinessLatencyFactor = clamp(patch.readinessLatencyFactor, 2, 50);
+      if (patch.faultDurationTicks !== undefined) h.faultDurationTicks = clamp(Math.round(patch.faultDurationTicks), 5, 300);
+      if (patch.circuitEnabled !== undefined) h.circuitEnabled = Boolean(patch.circuitEnabled);
+      if (patch.circuitOpenTicks !== undefined) h.circuitOpenTicks = clamp(Math.round(patch.circuitOpenTicks), 2, 60);
+      log(p, svc.id, "info", "Reliability settings updated.", "health");
       return;
     }
     case "updateQueue": {

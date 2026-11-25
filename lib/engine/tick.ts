@@ -21,6 +21,7 @@
 import { makeInstance } from "../defaults";
 import { decideDesiredCount } from "./autoscaler";
 import { distributeTraffic } from "./balancer";
+import { admitFraction, faultFailures, normalizeHealth, stepHealth } from "./healing";
 import {
   capacityRps,
   errorRatePct,
@@ -177,21 +178,35 @@ function tickService(p: Platform, svc: Service): void {
     }
   }
 
+  // ---- 2b. HEALTH ----------------------------------------------------------
+  // Health checks, restarts with backoff, crash loops and the circuit breaker
+  // (healing.ts). Runs BEFORE distribution so a pulled-out instance gets no
+  // traffic this tick, and a circuit breaker that just opened sheds it at once.
+  svc.health = normalizeHealth(svc.health); // worlds saved before this feature
+  stepHealth(svc, (level, msg) => log(p, svc.id, level, msg, "health"));
+  const admit = admitFraction(svc.health); // 1 = all traffic, 0 = breaker open
+
   // ---- 3. DISTRIBUTE -------------------------------------------------------
   // The load balancer decides how much each healthy instance is ASSIGNED
   // (balancer.ts). An instance can be assigned more than it can serve; that
-  // excess is what the queue below has to deal with.
+  // excess is what the queue below has to deal with. A dead instance that health
+  // checks haven't caught yet is still "healthy" here, so it still gets traffic.
   const serving = servingInstances(svc.instances);
   for (const inst of svc.instances) {
     inst.rps = 0;
     inst.conns = 0;
   }
-  distributeTraffic(serving, svc.currentRps, svc.autoscale.lb, svc.autoscale.rpsPerInstance);
+  distributeTraffic(serving, svc.currentRps * admit, svc.autoscale.lb, svc.autoscale.rpsPerInstance);
   // What the instances can really serve directly: each one tops out at its own capacity.
   const servedDirect = serving.reduce(
     (sum, i) => sum + Math.min(i.rps, instanceCapacityRps(i, svc.autoscale.rpsPerInstance)),
     0,
   );
+
+  // Requests that hit a dead or erroring instance, and requests the open circuit
+  // breaker refused outright. Both count as failures in the error rate.
+  svc.health.faultFailedNow = Math.round(faultFailures(serving, svc.autoscale.rpsPerInstance));
+  svc.health.shedNow = Math.round(svc.currentRps * (1 - admit));
 
   // ---- 3b. QUEUE -----------------------------------------------------------
   // Demand above capacity waits in the queue (or is rejected if it is full);
@@ -205,7 +220,7 @@ function tickService(p: Platform, svc: Service): void {
   };
   stepQueue(svc.queue, {
     tick: p.tick,
-    demandRps: svc.currentRps,
+    demandRps: svc.currentRps * admit, // the breaker keeps the rest out of the queue
     capacityRps: capacityRps(svc),
     servedRps: servedDirect,
   });
@@ -283,6 +298,13 @@ function tickService(p: Platform, svc: Service): void {
 
   // ---- 6. ALERT + RECORD ---------------------------------------------------
   const errRate = errorRatePct(svc);
+  // What the circuit breaker watches next tick: the failure rate among requests
+  // that were actually ADMITTED (otherwise an open breaker would always read 100%).
+  const admitted = svc.currentRps * admit;
+  svc.health.lastErrRate =
+    admitted > 0
+      ? Math.min(100, ((q.rejectedNow + q.failedNow + (svc.health.faultFailedNow ?? 0)) / admitted) * 100)
+      : 0;
   const p95 = p95LatencyMs(svc);
   svc.status = errRate > 5 || util > 100 ? "degraded" : "live";
   evaluateAlerts(p, svc, errRate, p95, util);
