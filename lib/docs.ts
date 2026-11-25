@@ -123,7 +123,7 @@ export const DOCS: TabDoc[] = [
       {
         heading: "Notifications",
         items: [
-          "Red when error rate is above 5%. Yellow when p95 is above 500 ms or utilisation is above the scale-up line. Green when calm again.",
+          "Red when error rate is above 5% (requests refused because the queue is full, or that gave up after retries). Yellow when p95 is above 500 ms or utilisation is above the scale-up line. Green when calm again.",
           "Scale-ups and instance changes go to the event log only, never to a pop-up.",
         ],
       },
@@ -141,6 +141,63 @@ export const DOCS: TabDoc[] = [
       { path: "lib/engine/traffic.ts", what: "the traffic patterns" },
       { path: "lib/engine/metrics.ts", what: "utilisation, latency, errors, cost" },
       { path: "lib/engine/nginx.ts", what: "generates nginx.conf" },
+    ],
+  },
+  {
+    slug: "queue",
+    title: "Queue & Workers",
+    tagline: "What happens to requests the servers can't handle yet: they wait in line, retry, or fail.",
+    tryIt: [
+      "In the Cluster tab's config, set Max instances to 2. Then set traffic to 160 req/s (capacity is only 100).",
+      "Watch the queue fill, then requests start timing out, retrying and landing in the dead-letter queue.",
+      "Set Queue capacity to 0 and repeat: the same overload now fails at once, with no waiting.",
+    ],
+    sections: [
+      {
+        heading: "The life of a request",
+        items: [
+          "Servers handle traffic up to their capacity. Anything above that is overflow, and it waits in the queue.",
+          "When servers have spare capacity, the oldest waiting requests are served first. Workers here are the instances: they drain the queue with whatever capacity is left over.",
+          "A request that waits longer than Max wait times out. It is retried after a delay that doubles each time (2 ticks, then 4), up to Max retries.",
+          "After the last retry it goes to the dead-letter queue (DLQ): failed for good, kept so someone can look at it.",
+          "If the queue is full, new overflow is rejected right away with HTTP 429 (Too Many Requests).",
+        ],
+      },
+      {
+        heading: "What you see",
+        items: [
+          "The flow diagram shows live numbers at every step. Boxes are labelled, never colour alone.",
+          "Charts: queue depth against the capacity line, and per second how many were served from the queue vs rejected.",
+          "Inside the queue: the waiting groups, how long each has waited, and whether it is a first try or a retry.",
+        ],
+      },
+      {
+        heading: "Settings and the dead-letter queue",
+        items: [
+          "Capacity: how many requests may wait (0 means no queue). Bigger absorbs longer spikes but makes waits longer.",
+          "Max wait, Max retries, Retry backoff: how patient the system is, and how hard it hammers an overloaded service.",
+          "Replay all puts dead-lettered requests back in line (only as many as fit). Purge discards them.",
+        ],
+      },
+      {
+        heading: "Why it matters",
+        items: [
+          "A queue turns a short spike into a short delay instead of errors. The price is latency: p95 includes the time spent waiting.",
+          "It cannot fix a lasting shortage. If demand stays above capacity, nothing ever drains and the queue just fills and then rejects.",
+          "Retries add load to a system that is already struggling. Backoff and a retry limit are what stop a retry storm.",
+        ],
+      },
+      {
+        heading: "Known limit",
+        items: [
+          "This models one waiting line in front of the servers. There are no separate background workers or job types yet.",
+        ],
+      },
+    ],
+    files: [
+      { path: "components/tabs/Queue.tsx", what: "this tab" },
+      { path: "lib/engine/queue.ts", what: "the queue, timeouts, retries and dead-letter queue" },
+      { path: "lib/engine/tick.ts", what: "runs the queue each tick" },
     ],
   },
 ];

@@ -23,6 +23,9 @@ the alert thresholds) lives in a small, commented TypeScript file.
 - **Get notified like a real on-call**: one pop-up per health change (🟢 healthy, 🟡 under
   strain, 🔴 users see errors) with a distinct sound for each. Routine events stay in the
   event log.
+- **Overload it and watch the queue**: demand the servers can't handle waits in a queue, times
+  out, retries with backoff, and ends up in a dead-letter queue (or is rejected with HTTP 429
+  when the queue is full). You can replay or purge the dead letters.
 - **Fast-forward time** (1x / 5x / 60x) and **share a link** to the exact view: the tab,
   service and log filter live in the URL.
 - **Read the docs in the app**: one short page per tab at `/docs`.
@@ -30,6 +33,12 @@ the alert thresholds) lives in a small, commented TypeScript file.
 | Overview | Docs |
 |---|---|
 | ![Overview tab](docs/images/overview.png) | ![Docs page](docs/images/docs.png) |
+
+The **Queue & Workers** tab under a sustained overload (fleet capped at 2 instances, 160 req/s
+against 100 capacity): the queue is full, requests are being rejected, and timed-out requests
+are retrying and landing in the dead-letter queue.
+
+![Queue & Workers tab during a sustained overload](docs/images/queue.png)
 
 ## Try it in 30 seconds
 
@@ -42,11 +51,12 @@ the alert thresholds) lives in a small, commented TypeScript file.
 
 | Area | State |
 |---|---|
-| Overview and Autoscaling Cluster tabs | Built |
+| Overview, Autoscaling Cluster and Queue & Workers tabs | Built |
 | Autoscaler, traffic patterns, health status, notifications, docs | Built |
+| Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
 | Load balancer algorithms (round-robin / least-conn / weighted) | **Setting only changes `nginx.conf`; traffic is still split evenly** |
-| Deployments, Scheduled Scaling, Queue & Workers, Reliability (chaos and self-healing), Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
+| Deployments, Scheduled Scaling, Reliability (chaos and self-healing), Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
 
 ## How it works
 
@@ -119,12 +129,12 @@ app/
   api/control        POST: apply one validated Command
   docs/              the in-app documentation routes
 components/
-  tabs/              Overview, Cluster
+  tabs/              Overview, Cluster, Queue
   shared/            traffic controls, charts, instance table, event log, nginx view, config
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, queue, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

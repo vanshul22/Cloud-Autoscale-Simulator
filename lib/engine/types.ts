@@ -87,16 +87,49 @@ export interface Schedule {
 }
 
 // -----------------------------------------------------------------------------
-// Queue + workers: load that cannot be served instantly is buffered here.
+// Queue: requests the servers cannot handle RIGHT NOW wait here instead of failing.
+//
+// Life of a request when demand exceeds capacity:
+//   1. overflow arrives -> if there is room it WAITS in the queue (else: rejected, 429)
+//   2. when servers have spare capacity, the OLDEST waiting requests are served first
+//   3. a request that waits longer than maxWaitTicks TIMES OUT
+//   4. a timed-out request is RETRIED after a backoff delay, up to maxRetries times
+//   5. after the last retry it lands in the DEAD-LETTER QUEUE (DLQ): failed for good
 // -----------------------------------------------------------------------------
+
+/**
+ * A group of requests that entered the queue together. Tracking groups instead of
+ * single requests keeps the saved world small (thousands of requests = a handful
+ * of groups) while still letting us age, retry and serve them in order.
+ */
+export interface Cohort {
+  n: number; // how many requests are in this group
+  age: number; // ticks spent waiting in line since (re)entering
+  attempts: number; // 0 = first try, 1 = first retry, ...
+  readyAt: number; // tick when it may be served; later than "now" means backing off
+}
+
 export interface QueueState {
-  depth: number; // jobs currently waiting
-  capacity: number; // max depth before we shed load (backpressure / 429)
-  concurrency: number; // how many jobs a single instance works at once
-  maxRetries: number; // attempts before a job goes to the dead-letter queue
-  dlq: number; // count of permanently-failed jobs (dead-letter queue)
-  processed: number; // lifetime count of successfully processed jobs
-  rejected: number; // lifetime count of jobs shed due to backpressure
+  cohorts: Cohort[]; // waiting groups, oldest first
+  capacity: number; // max requests waiting; beyond this we reject with 429 (0 = no queue)
+  maxWaitTicks: number; // a request waiting longer than this times out
+  maxRetries: number; // retries after a timeout before the request goes to the DLQ
+  retryBackoffTicks: number; // base delay before a retry; doubles on each attempt
+
+  // Derived from `cohorts` every tick, kept so the UI and charts can read them directly.
+  depth: number; // total requests waiting or backing off
+  oldestAge: number; // longest anyone has waited, in ticks (drives added latency)
+
+  // Lifetime counters.
+  dlq: number; // requests that failed for good (the dead-letter queue)
+  processed: number; // requests served after waiting in the queue
+  rejected: number; // requests refused because the queue was full (HTTP 429)
+  retried: number; // retry attempts started
+
+  // What happened during the LAST tick only (the error rate is computed from these).
+  servedNow: number;
+  rejectedNow: number;
+  failedNow: number; // moved to the DLQ this tick
 }
 
 // -----------------------------------------------------------------------------
@@ -133,6 +166,9 @@ export interface Metric {
   errRate: number; // error rate %, 0..100
   instances: number; // healthy instance count
   queueDepth: number;
+  // Optional: points saved before the queue feature existed do not have these.
+  queueServed?: number; // requests drained from the queue this tick
+  queueRejected?: number; // requests refused (429) this tick
 }
 
 // -----------------------------------------------------------------------------

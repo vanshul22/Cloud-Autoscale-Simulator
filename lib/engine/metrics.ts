@@ -31,28 +31,42 @@ export function utilisationPct(svc: Service): number {
 }
 
 /**
- * p95 latency in ms. A real queueing system gets slow *non-linearly*: fine at
- * 50% load, painful at 90%, awful past 100%. We model that with 1/(1-u):
+ * p95 latency in ms = time to be served + time spent WAITING IN THE QUEUE.
+ *
+ * Service time: a real queueing system gets slow *non-linearly*: fine at 50% load,
+ * painful at 90%, awful past 100%. We model that with 1/(1-u):
  *   util 50% -> ~2x base latency, 90% -> ~10x, >=97% -> clamped (saturated).
+ *
+ * Queue time: a request that sat in line for N ticks waited about N seconds (a
+ * tick is one second of traffic). The oldest waiter approximates the tail (p95).
+ * This is the price of a queue: fewer errors, but slower answers.
  */
 export function p95LatencyMs(svc: Service): number {
   const BASE_MS = 40;
   const u = clamp(utilisationPct(svc) / 100, 0, 0.97);
-  const ms = BASE_MS / (1 - u);
-  return Math.round(clamp(ms, BASE_MS, 5000));
+  const serviceMs = clamp(BASE_MS / (1 - u), BASE_MS, 1500);
+  const queueMs = (svc.queue.oldestAge ?? 0) * 1000;
+  return Math.round(clamp(serviceMs + queueMs, BASE_MS, 10000));
 }
 
 /**
- * Error rate %. When demand exceeds capacity the excess can't be served; that
- * fraction fails (timeouts/502s). Later the queue will absorb some of it, but
- * for now the excess is simply dropped.
+ * Error rate %: the share of this tick's requests that FAILED, meaning the queue
+ * was full and refused them (HTTP 429) or they waited, retried and finally gave up
+ * (moved to the dead-letter queue). Overflow the queue is still holding is NOT an
+ * error yet: it shows up as latency instead, until it overflows or times out.
  */
 export function errorRatePct(svc: Service): number {
-  const cap = capacityRps(svc);
   if (svc.currentRps <= 0) return 0;
-  if (cap === 0) return 100;
-  const excess = Math.max(0, svc.currentRps - cap);
-  return clamp((excess / svc.currentRps) * 100, 0, 100);
+  const q = svc.queue;
+  if (q.rejectedNow === undefined) {
+    // A world saved before the queue existed, read before its first tick: use the
+    // old rule (everything over capacity fails) so the numbers are still sane.
+    const cap = capacityRps(svc);
+    if (cap === 0) return 100;
+    return clamp((Math.max(0, svc.currentRps - cap) / svc.currentRps) * 100, 0, 100);
+  }
+  const failed = q.rejectedNow + (q.failedNow ?? 0);
+  return clamp((failed / svc.currentRps) * 100, 0, 100);
 }
 
 /** Estimated spend rate in $/hour for everything that's running (booting too). */

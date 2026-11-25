@@ -12,8 +12,9 @@
 // =============================================================================
 
 import { clamp } from "./ids";
+import { normalizeQueue } from "./queue";
 import { log } from "./tick";
-import type { AutoscaleConfig, LbAlgo, Pattern, Platform, Service } from "./types";
+import type { AutoscaleConfig, LbAlgo, Pattern, Platform, QueueState, Service } from "./types";
 
 export type Command =
   | { type: "setTraffic"; serviceId: string; rps: number } // move the base-load slider
@@ -26,6 +27,13 @@ export type Command =
       serviceId: string;
       patch: Partial<Omit<AutoscaleConfig, "lb">> & { lb?: LbAlgo };
     }
+  | {
+      type: "updateQueue";
+      serviceId: string;
+      patch: Partial<Pick<QueueState, "capacity" | "maxWaitTicks" | "maxRetries" | "retryBackoffTicks">>;
+    }
+  | { type: "replayDlq"; serviceId: string } // put dead-lettered requests back in line
+  | { type: "purgeDlq"; serviceId: string } // discard dead-lettered requests
   | { type: "reset" };
 
 export const MAX_RPS = 5000; // hard ceiling so a slider typo can't produce 1e9 RPS
@@ -96,6 +104,40 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (a.min > a.max) a.min = a.max;
       if (a.scaleDownAt >= a.scaleUpAt) a.scaleDownAt = Math.max(0, a.scaleUpAt - 1);
       log(p, svc.id, "info", "Autoscaling configuration updated.");
+      return;
+    }
+    case "updateQueue": {
+      const svc = find(p, cmd.serviceId);
+      const q = (svc.queue = normalizeQueue(svc.queue));
+      const { patch } = cmd;
+      if (patch.capacity !== undefined) q.capacity = clamp(Math.round(patch.capacity), 0, 100000);
+      if (patch.maxWaitTicks !== undefined) q.maxWaitTicks = clamp(Math.round(patch.maxWaitTicks), 1, 120);
+      if (patch.maxRetries !== undefined) q.maxRetries = clamp(Math.round(patch.maxRetries), 0, 10);
+      if (patch.retryBackoffTicks !== undefined)
+        q.retryBackoffTicks = clamp(Math.round(patch.retryBackoffTicks), 1, 60);
+      log(p, svc.id, "info", "Queue configuration updated.");
+      return;
+    }
+    case "replayDlq": {
+      const svc = find(p, cmd.serviceId);
+      const q = (svc.queue = normalizeQueue(svc.queue));
+      if (q.dlq <= 0) throw new Error("The dead-letter queue is empty.");
+      // Replay only what fits: the queue's capacity still applies.
+      const room = Math.max(0, q.capacity - q.depth);
+      const n = Math.min(q.dlq, room);
+      if (n <= 0) throw new Error("The queue is full, so nothing can be replayed right now.");
+      q.dlq -= n;
+      q.depth += n;
+      q.cohorts.push({ n, age: 0, attempts: 0, readyAt: p.tick }); // a fresh start: attempts reset
+      log(p, svc.id, "info", `Replayed ${n} dead-lettered request(s) back into the queue.`);
+      return;
+    }
+    case "purgeDlq": {
+      const svc = find(p, cmd.serviceId);
+      const q = (svc.queue = normalizeQueue(svc.queue));
+      if (q.dlq <= 0) throw new Error("The dead-letter queue is empty.");
+      log(p, svc.id, "info", `Purged ${q.dlq} dead-lettered request(s).`);
+      q.dlq = 0;
       return;
     }
     case "reset":

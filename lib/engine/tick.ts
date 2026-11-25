@@ -21,11 +21,13 @@
 import { makeInstance } from "../defaults";
 import { decideDesiredCount } from "./autoscaler";
 import {
+  capacityRps,
   errorRatePct,
   p95LatencyMs,
   servingInstances,
   utilisationPct,
 } from "./metrics";
+import { normalizeQueue, stepQueue } from "./queue";
 import { SPIKE_DURATION_TICKS, desiredRps, easeToward } from "./traffic";
 import type { Platform, Service, SimEvent } from "./types";
 
@@ -189,6 +191,33 @@ function tickService(p: Platform, svc: Service): void {
     }
   }
 
+  // ---- 3b. QUEUE -----------------------------------------------------------
+  // Demand above capacity waits in the queue (or is rejected if it is full);
+  // spare capacity drains it. See queue.ts. Runs before we measure, so errors
+  // and latency reflect what the queue just did.
+  svc.queue = normalizeQueue(svc.queue); // worlds saved before the queue existed
+  const before = {
+    depth: svc.queue.depth,
+    rejecting: svc.queue.rejectedNow > 0,
+    failing: svc.queue.failedNow > 0,
+  };
+  stepQueue(svc.queue, {
+    tick: p.tick,
+    demandRps: svc.currentRps,
+    capacityRps: capacityRps(svc),
+  });
+  const q = svc.queue;
+  // Log only when something CHANGES, not every tick it persists.
+  if (q.rejectedNow > 0 && !before.rejecting) {
+    log(p, svc.id, "warn", `Queue is full (${q.depth}/${q.capacity}): rejecting requests with HTTP 429.`);
+  }
+  if (q.failedNow > 0 && !before.failing) {
+    log(p, svc.id, "warn", `${q.failedNow} request(s) failed after ${q.maxRetries} retries and moved to the dead-letter queue.`);
+  }
+  if (q.depth === 0 && before.depth > 0) {
+    log(p, svc.id, "info", "Queue drained: no requests waiting.");
+  }
+
   // ---- 4. MEASURE ----------------------------------------------------------
   const util = utilisationPct(svc);
 
@@ -257,6 +286,8 @@ function tickService(p: Platform, svc: Service): void {
     errRate: Math.round(errRate * 10) / 10,
     instances: servingInstances(svc.instances).length,
     queueDepth: svc.queue.depth,
+    queueServed: svc.queue.servedNow,
+    queueRejected: svc.queue.rejectedNow,
   });
   if (svc.metricsHistory.length > MAX_HISTORY) {
     svc.metricsHistory.splice(0, svc.metricsHistory.length - MAX_HISTORY);

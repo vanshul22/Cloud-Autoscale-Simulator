@@ -8,14 +8,8 @@
 // =============================================================================
 
 import { shortId } from "./engine/ids";
-import type {
-  AutoscaleConfig,
-  HealthConfig,
-  Instance,
-  Platform,
-  QueueState,
-  Service,
-} from "./engine/types";
+import { defaultQueue } from "./engine/queue";
+import type { AutoscaleConfig, HealthConfig, Instance, Platform, Service } from "./engine/types";
 
 /** A fresh, healthy-after-boot instance of a given version. */
 export function makeInstance(version: string, booting = true): Instance {
@@ -40,16 +34,6 @@ const defaultAutoscale = (): AutoscaleConfig => ({
   scaleDownAt: 30, // shed capacity below 30% utilisation
   cooldownTicks: 4, // wait 4 ticks between scaling actions (anti-flapping)
   lb: "round-robin",
-});
-
-const defaultQueue = (): QueueState => ({
-  depth: 0,
-  capacity: 500, // start rejecting (429) once 500 jobs are waiting
-  concurrency: 20, // each instance works 20 jobs per tick
-  maxRetries: 3,
-  dlq: 0,
-  processed: 0,
-  rejected: 0,
 });
 
 const defaultHealth = (): HealthConfig => ({
