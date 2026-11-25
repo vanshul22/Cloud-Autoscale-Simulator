@@ -104,9 +104,10 @@ No setup needed: locally the world is kept in memory. (Restarting the server res
 
    Vercel's own Upstash integration names them `KV_REST_API_URL` / `KV_REST_API_TOKEN`;
    the app accepts either pair.
-3. **Match the regions.** In Vercel, set **Settings → Functions → Function Region** to the
-   region nearest your Upstash database (for example Mumbai `bom1` for an ap-south-1
-   database) and redeploy. Otherwise every request crosses an ocean to reach Redis.
+3. **Match the regions.** [`vercel.json`](vercel.json) pins the functions to Mumbai (`bom1`),
+   next to the author's Upstash database. Change `regions` to the Vercel region nearest
+   *your* database before deploying, or every request will cross an ocean to reach Redis
+   (the default region is Washington DC, `iad1`).
 4. **Check.** The header pill should read `storage: redis`. If it says `memory`, the
    variables didn't reach the deployment.
 
