@@ -14,7 +14,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Command } from "@/lib/engine/commands";
 import type { Platform } from "@/lib/engine/types";
 
-const POLL_MS = 1000;
+// Locally, poll every second for the smoothest charts. When deployed, poll every
+// 2s: the server still simulates every elapsed second (time is derived from the
+// clock, not from poll count), but each poll costs a Redis command, and the free
+// Upstash tier has a monthly command budget. Halving polls roughly doubles how
+// long the free tier lasts.
+const POLL_MS = process.env.NODE_ENV === "production" ? 2000 : 1000;
+
+// Stop polling after this long with no mouse/keyboard/touch activity, and resume
+// on the next interaction. A tab left open overnight would otherwise spend the
+// free quota for nobody. (The world also just pauses: it only advances when read.)
+const IDLE_MS = 10 * 60 * 1000;
 
 type Storage = "memory" | "redis";
 interface Snapshot {
@@ -27,10 +37,12 @@ export function usePlatform() {
   const [storage, setStorage] = useState<Storage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [idle, setIdle] = useState(false); // true while polling is paused for inactivity
 
   // Refs hold values that must survive renders without causing one.
   const inFlight = useRef(false); // true while a poll request is pending
   const epoch = useRef(0); // bumped on every send; lets us drop stale poll replies
+  const lastActivity = useRef(Date.now()); // last time the user touched the page
 
   const apply = useCallback((snap: Snapshot) => {
     setPlatform(snap.platform);
@@ -41,6 +53,11 @@ export function usePlatform() {
   const poll = useCallback(async () => {
     // Skip if the previous request has not finished (slow network) or the tab is hidden.
     if (inFlight.current || document.hidden) return;
+    // Nobody has interacted for a while: stop spending the quota until they do.
+    if (Date.now() - lastActivity.current > IDLE_MS) {
+      setIdle(true);
+      return;
+    }
     inFlight.current = true;
     const startedAt = epoch.current;
     try {
@@ -67,9 +84,23 @@ export function usePlatform() {
       if (!document.hidden) poll();
     };
     document.addEventListener("visibilitychange", onVisible);
+
+    // Any real interaction counts as "still here"; if we had paused, resume now.
+    // These events are cheap (we only store a timestamp), so no throttling needed.
+    const onActivity = () => {
+      lastActivity.current = Date.now();
+      setIdle((wasIdle) => {
+        if (wasIdle) poll();
+        return false;
+      });
+    };
+    const ACTIVITY_EVENTS = ["pointerdown", "keydown", "wheel", "touchstart"] as const;
+    for (const ev of ACTIVITY_EVENTS) window.addEventListener(ev, onActivity, { passive: true });
+
     return () => {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
+      for (const ev of ACTIVITY_EVENTS) window.removeEventListener(ev, onActivity);
     };
   }, [poll]);
 
@@ -96,5 +127,5 @@ export function usePlatform() {
     [apply],
   );
 
-  return { platform, storage, error, loading, send };
+  return { platform, storage, error, loading, idle, send };
 }

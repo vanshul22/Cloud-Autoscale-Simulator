@@ -36,7 +36,7 @@ function formatClock(mins: number): string {
 }
 
 export function Dashboard() {
-  const { platform, storage, error, loading, send } = usePlatform();
+  const { platform, storage, error, loading, idle, send } = usePlatform();
   const [soundOn, setSoundOn] = useSoundSetting();
   useAlertToasts(platform, soundOn); // pop-ups (and sound) for alerts and warnings
   // View state (which tab, which service) lives in the URL query string, e.g.
@@ -141,6 +141,18 @@ export function Dashboard() {
             {error}
             {platform ? "" : ". Retrying every second."}
           </span>
+        </div>
+      )}
+
+      {/* Shown when polling paused after 10 idle minutes (saves the free hosting
+          quota). Any click, key press or scroll resumes it; no button needed. */}
+      {idle && (
+        <div
+          role="status"
+          className="mb-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--warning))]/40 bg-[hsl(var(--warning))]/10 px-3 py-2 text-sm"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--warning))]" aria-hidden="true" />
+          <span>Paused after 10 minutes without activity, to save free hosting quota. Click, scroll or press a key to resume.</span>
         </div>
       )}
 

@@ -188,6 +188,11 @@ export interface Service {
 // Platform: the entire world. This is what we persist in Redis.
 // -----------------------------------------------------------------------------
 export interface Platform {
+  // Version counter, bumped on every save. In production many requests share one
+  // Redis copy of the world; `rev` lets a save say "only write if nobody else
+  // saved since I read" (compare-and-set), so concurrent requests cannot silently
+  // overwrite each other's changes. Optional: the seed world starts without one.
+  rev?: number;
   tick: number; // monotonically increasing simulation step
   speed: 1 | 5 | 60; // time multiplier (fast-forward schedules/deploys)
   lastTickAt: number; // epoch ms of the last advance (for tick-on-read)

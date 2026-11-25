@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { applyCommand, type Command } from "@/lib/engine/commands";
 import { advance } from "@/lib/engine/tick";
-import { getPlatform, resetPlatform, savePlatform, usingRedis } from "@/lib/store";
+import { resetPlatform, update, usingRedis } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -27,16 +27,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ platform, storage });
   }
 
-  const platform = await getPlatform();
-  advance(platform); // bring the world up to "now" before applying the change
   try {
-    applyCommand(platform, cmd);
+    // `update` loads the world, runs this change, and saves only if nobody else
+    // saved meanwhile (otherwise it reloads and runs it again). So a click is
+    // never lost to a concurrent poll from another visitor.
+    const { platform } = await update((p) => {
+      advance(p); // bring the world up to "now" before applying the change
+      applyCommand(p, cmd);
+    });
+    return NextResponse.json({ platform, storage });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Invalid command" },
-      { status: 400 },
-    );
+    const message = e instanceof Error ? e.message : "Invalid command";
+    // "busy" is our retry-exhausted case (a server condition); the rest are bad input.
+    const status = message.startsWith("The simulator is busy") ? 503 : 400;
+    return NextResponse.json({ error: message }, { status });
   }
-  await savePlatform(platform);
-  return NextResponse.json({ platform, storage });
 }
