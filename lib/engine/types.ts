@@ -54,7 +54,15 @@ export interface Instance {
 
   rps: number; // requests/sec this instance is currently handling
   conns: number; // active connections (used by least-conn balancing)
-  weight: number; // relative capacity (used by weighted balancing)
+  // Size: relative capacity. 1 = a standard instance (serves rpsPerInstance req/s),
+  // 2 = a large one (twice that). Weighted and least-connections balancing use it;
+  // round-robin deliberately ignores it, which is exactly its weakness.
+  weight: number;
+  // How much SLOWER than normal this instance answers (1 = normal, 3 = three times
+  // slower). A slow instance holds each connection longer, which least-connections
+  // notices and round-robin/weighted do not. The Reliability tab's "inject latency"
+  // sets it. Optional: instances saved before this field existed count as 1.
+  latencyFactor?: number;
 
   // When chaos injects a fault we remember it so the tick can act on it.
   fault?: "crash" | "oom" | "latency" | "errors";
@@ -71,6 +79,10 @@ export interface AutoscaleConfig {
   scaleDownAt: number; // utilisation % below which we remove instances (e.g. 30)
   cooldownTicks: number; // ticks to wait after a scale action before acting again
   lb: LbAlgo;
+  // false = hands off: the autoscaler never adds or removes instances, so you can
+  // size the fleet yourself (add/remove buttons) and compare balancers. Optional:
+  // saved worlds without it behave as true.
+  enabled?: boolean;
 }
 
 // -----------------------------------------------------------------------------

@@ -20,9 +20,11 @@
 
 import { makeInstance } from "../defaults";
 import { decideDesiredCount } from "./autoscaler";
+import { distributeTraffic } from "./balancer";
 import {
   capacityRps,
   errorRatePct,
+  instanceCapacityRps,
   p95LatencyMs,
   servingInstances,
   utilisationPct,
@@ -176,20 +178,20 @@ function tickService(p: Platform, svc: Service): void {
   }
 
   // ---- 3. DISTRIBUTE -------------------------------------------------------
-  // TODO (checkpoint 2): replace this even split with balancer.ts so the LB
-  // algorithm (round-robin / least-conn / weighted) decides who gets what.
+  // The load balancer decides how much each healthy instance is ASSIGNED
+  // (balancer.ts). An instance can be assigned more than it can serve; that
+  // excess is what the queue below has to deal with.
   const serving = servingInstances(svc.instances);
   for (const inst of svc.instances) {
     inst.rps = 0;
     inst.conns = 0;
   }
-  if (serving.length > 0) {
-    const share = svc.currentRps / serving.length;
-    for (const inst of serving) {
-      inst.rps = Math.round(share * 10) / 10;
-      inst.conns = Math.round(share * 0.4); // ~0.4s average request duration
-    }
-  }
+  distributeTraffic(serving, svc.currentRps, svc.autoscale.lb, svc.autoscale.rpsPerInstance);
+  // What the instances can really serve directly: each one tops out at its own capacity.
+  const servedDirect = serving.reduce(
+    (sum, i) => sum + Math.min(i.rps, instanceCapacityRps(i, svc.autoscale.rpsPerInstance)),
+    0,
+  );
 
   // ---- 3b. QUEUE -----------------------------------------------------------
   // Demand above capacity waits in the queue (or is rejected if it is full);
@@ -205,6 +207,7 @@ function tickService(p: Platform, svc: Service): void {
     tick: p.tick,
     demandRps: svc.currentRps,
     capacityRps: capacityRps(svc),
+    servedRps: servedDirect,
   });
   const q = svc.queue;
   // Log only when something CHANGES, not every tick it persists.
@@ -238,7 +241,11 @@ function tickService(p: Platform, svc: Service): void {
   const current = svc.instances.filter(
     (i) => i.status === "healthy" || i.status === "booting",
   ).length;
-  const want = decideDesiredCount(util, current, svc.autoscale, svc.cooldownLeft);
+  // Autoscaling can be switched off ("hands off"): then you size the fleet yourself.
+  const want =
+    svc.autoscale.enabled === false
+      ? current
+      : decideDesiredCount(util, current, svc.autoscale, svc.cooldownLeft);
 
   if (want > current) {
     const add = want - current;
@@ -262,9 +269,10 @@ function tickService(p: Platform, svc: Service): void {
       "info",
       `Load is low (${Math.round(util)}% utilisation). Scaling down ${current} -> ${want}.`,
     );
-    // Drain the least-busy healthy instances first (least disruption).
+    // Drain the SMALLEST instances first (a large one carries more load), and among
+    // equals the least busy one (least disruption).
     const victims = servingInstances(svc.instances)
-      .sort((a, b) => a.rps - b.rps)
+      .sort((a, b) => (a.weight || 1) - (b.weight || 1) || a.rps - b.rps)
       .slice(0, remove);
     for (const v of victims) {
       v.status = "draining";

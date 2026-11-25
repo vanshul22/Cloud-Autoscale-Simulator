@@ -11,6 +11,7 @@
 // bottom of the switch will tell you if you forget one.
 // =============================================================================
 
+import { makeInstance } from "../defaults";
 import { clamp } from "./ids";
 import { normalizeQueue } from "./queue";
 import { log } from "./tick";
@@ -32,11 +33,14 @@ export type Command =
       serviceId: string;
       patch: Partial<Pick<QueueState, "capacity" | "maxWaitTicks" | "maxRetries" | "retryBackoffTicks">>;
     }
+  | { type: "addInstance"; serviceId: string; size: number } // size 1 = standard, 2 = large...
+  | { type: "removeInstance"; serviceId: string; instanceId: string } // graceful drain
   | { type: "replayDlq"; serviceId: string } // put dead-lettered requests back in line
   | { type: "purgeDlq"; serviceId: string } // discard dead-lettered requests
   | { type: "reset" };
 
 export const MAX_RPS = 5000; // hard ceiling so a slider typo can't produce 1e9 RPS
+export const MAX_INSTANCES = 30; // hard ceiling on instances per service
 
 function find(p: Platform, id: string): Service {
   const svc = p.services.find((s) => s.id === id);
@@ -100,10 +104,33 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (patch.cooldownTicks !== undefined)
         a.cooldownTicks = clamp(Math.round(patch.cooldownTicks), 0, 120);
       if (patch.lb !== undefined) a.lb = patch.lb;
+      if (patch.enabled !== undefined) a.enabled = Boolean(patch.enabled);
       // Keep the config self-consistent so the autoscaler never sees nonsense.
       if (a.min > a.max) a.min = a.max;
       if (a.scaleDownAt >= a.scaleUpAt) a.scaleDownAt = Math.max(0, a.scaleUpAt - 1);
       log(p, svc.id, "info", "Autoscaling configuration updated.");
+      return;
+    }
+    case "addInstance": {
+      const svc = find(p, cmd.serviceId);
+      // A hard ceiling so nobody (or a public visitor) can grow the world forever.
+      if (svc.instances.length >= MAX_INSTANCES) {
+        throw new Error(`A service can have at most ${MAX_INSTANCES} instances.`);
+      }
+      const size = clamp(Math.round(cmd.size), 1, 4);
+      const inst = makeInstance(svc.version, true); // boots for a few ticks, like any new instance
+      inst.weight = size;
+      svc.instances.push(inst);
+      log(p, svc.id, "info", `Instance ${inst.id} added by hand (${size === 1 ? "standard" : `${size}x`} size, booting).`);
+      return;
+    }
+    case "removeInstance": {
+      const svc = find(p, cmd.serviceId);
+      const inst = svc.instances.find((i) => i.id === cmd.instanceId);
+      if (!inst) throw new Error(`Unknown instance: ${cmd.instanceId}`);
+      if (inst.status === "draining") throw new Error("That instance is already draining.");
+      inst.status = "draining"; // finishes its goodbye tick, then tick.ts removes it
+      log(p, svc.id, "info", `Instance ${inst.id} draining (removed by hand).`);
       return;
     }
     case "updateQueue": {

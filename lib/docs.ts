@@ -87,6 +87,7 @@ export const DOCS: TabDoc[] = [
       "Press Spike (or set traffic to 400 req/s). Utilisation jumps and errors appear.",
       "Watch new instances boot, join the nginx.conf, and bring errors back to 0%.",
       "Press Stop traffic. The extra instances are removed one at a time.",
+      "Compare balancers: turn Autoscaling off, add one large instance, set traffic near 160 req/s, then switch Round-robin and Weighted.",
     ],
     sections: [
       {
@@ -128,14 +129,18 @@ export const DOCS: TabDoc[] = [
         ],
       },
       {
-        heading: "Known limit",
+        heading: "Load balancer and instance sizes",
         items: [
-          "The load balancer setting (round-robin, least-conn, weighted) changes nginx.conf, but traffic is still split evenly across instances. The real balancer logic is the next piece to build.",
+          "Add standard or large (2x capacity) instances by hand, and remove any instance with its Remove button. Switch Autoscaling off in the config to keep the fleet exactly as you set it.",
+          "Round-robin deals requests out equally: it ignores size and speed, so small instances get overloaded while a large one idles.",
+          "Weighted splits traffic by size: a 2x instance gets twice as much. Least-conn sends traffic where the fewest connections are open per unit of size, so it also steers away from a slow instance.",
+          "With identical instances all three behave the same. Mix sizes and compare the Utilisation bars and the p95 latency.",
         ],
       },
     ],
     files: [
       { path: "components/tabs/Cluster.tsx", what: "this tab's layout" },
+      { path: "lib/engine/balancer.ts", what: "how traffic is split across instances" },
       { path: "lib/engine/autoscaler.ts", what: "the scaling decision" },
       { path: "lib/engine/tick.ts", what: "one simulation step, and the health status" },
       { path: "lib/engine/traffic.ts", what: "the traffic patterns" },

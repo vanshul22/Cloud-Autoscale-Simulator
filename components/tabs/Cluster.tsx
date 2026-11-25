@@ -97,7 +97,7 @@ export function Cluster({ platform, serviceId, onSelectService, send }: ClusterP
         </div>
         <div className="min-w-0 max-lg:contents lg:space-y-4">
           <div className="order-2 min-w-0 lg:order-none">
-            <InstanceTable service={service} />
+            <InstanceTable service={service} send={send} />
           </div>
           <div className="order-4 min-w-0 lg:order-none">
             <NginxView service={service} />

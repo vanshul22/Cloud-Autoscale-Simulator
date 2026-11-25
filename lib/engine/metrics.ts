@@ -14,9 +14,17 @@ export function servingInstances(instances: Instance[]): Instance[] {
   return instances.filter((i) => i.status === "healthy");
 }
 
+/** How many req/s ONE instance can serve: its size times the standard capacity. */
+export function instanceCapacityRps(inst: Instance, rpsPerInstance: number): number {
+  return Math.max(1, inst.weight || 1) * rpsPerInstance;
+}
+
 /** Total RPS the healthy fleet can absorb before it starts to saturate. */
 export function capacityRps(svc: Service): number {
-  return servingInstances(svc.instances).length * svc.autoscale.rpsPerInstance;
+  return servingInstances(svc.instances).reduce(
+    (sum, i) => sum + instanceCapacityRps(i, svc.autoscale.rpsPerInstance),
+    0,
+  );
 }
 
 /**
@@ -43,8 +51,22 @@ export function utilisationPct(svc: Service): number {
  */
 export function p95LatencyMs(svc: Service): number {
   const BASE_MS = 40;
-  const u = clamp(utilisationPct(svc) / 100, 0, 0.97);
-  const serviceMs = clamp(BASE_MS / (1 - u), BASE_MS, 1500);
+  // The tail is set by the WORST instance, not the average: if one instance is
+  // overloaded or slow, the unlucky requests it serves define p95. With evenly
+  // loaded identical instances this equals the fleet-wide figure.
+  const serving = servingInstances(svc.instances);
+  let serviceMs: number;
+  if (serving.length === 0) {
+    serviceMs = 1500; // nothing is serving: report the saturated figure
+  } else {
+    serviceMs = Math.max(
+      ...serving.map((i) => {
+        const u = clamp(i.rps / instanceCapacityRps(i, svc.autoscale.rpsPerInstance), 0, 0.97);
+        return (BASE_MS * (i.latencyFactor ?? 1)) / (1 - u);
+      }),
+    );
+    serviceMs = clamp(serviceMs, BASE_MS, 1500);
+  }
   const queueMs = (svc.queue.oldestAge ?? 0) * 1000;
   return Math.round(clamp(serviceMs + queueMs, BASE_MS, 10000));
 }

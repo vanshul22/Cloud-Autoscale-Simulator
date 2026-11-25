@@ -76,14 +76,19 @@ const waiting = (cohorts: Cohort[]) => cohorts.reduce((sum, c) => sum + c.n, 0);
  * Advance the queue by one tick. Mutates `q`.
  *
  *   demandRps   : requests that arrived this tick
- *   capacityRps : requests the healthy instances can serve this tick
+ *   capacityRps : the most the healthy instances could serve in total
+ *   servedRps   : what they actually served directly. This can be LESS than
+ *                 min(demand, capacity): a balancer that sends too much to a small
+ *                 instance overloads it while others sit idle (see balancer.ts).
+ *                 Omit it and we assume a perfectly even split.
  */
 export function stepQueue(
   q: QueueState,
-  input: { tick: number; demandRps: number; capacityRps: number },
+  input: { tick: number; demandRps: number; capacityRps: number; servedRps?: number },
 ): void {
   const { tick } = input;
   const demand = Math.max(0, input.demandRps);
+  const served = Math.min(demand, input.servedRps ?? Math.min(demand, input.capacityRps));
 
   // Fresh counters for "what happened this tick".
   q.servedNow = 0;
@@ -92,8 +97,8 @@ export function stepQueue(
 
   // Servers handle new traffic first, up to capacity. What is left over is either
   // SPARE capacity (used to drain the queue) or OVERFLOW (needs to queue).
-  const spare = Math.max(0, input.capacityRps - demand);
-  const overflow = Math.max(0, demand - input.capacityRps);
+  const spare = Math.max(0, input.capacityRps - served);
+  const overflow = Math.max(0, demand - served);
 
   // ---- 1. AGE everyone in line; time out the ones that waited too long -------
   const stillWaiting: Cohort[] = [];

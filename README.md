@@ -18,6 +18,8 @@ the alert thresholds) lives in a small, commented TypeScript file.
   day/night wave, noise.
 - **Watch it autoscale**: instances boot, join the pool, and drain when load drops, with
   utilisation, p95 latency, error rate and cost updating live.
+- **Compare load balancers**: add large instances by hand, switch autoscaling off, and see
+  round-robin overload the small ones while weighted and least-connections even things out.
 - **See the nginx.conf** generated from the healthy instances, with added and removed
   `server` lines highlighted as they change.
 - **Get notified like a real on-call**: one pop-up per health change (🟢 healthy, 🟡 under
@@ -55,7 +57,7 @@ are retrying and landing in the dead-letter queue.
 | Autoscaler, traffic patterns, health status, notifications, docs | Built |
 | Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
-| Load balancer algorithms (round-robin / least-conn / weighted) | **Setting only changes `nginx.conf`; traffic is still split evenly** |
+| Load balancer: round-robin, weighted and least-connections, with instance sizes, slow instances, and manual add/remove | Built |
 | Deployments, Scheduled Scaling, Reliability (chaos and self-healing), Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
 
 ## How it works
@@ -134,7 +136,7 @@ components/
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, queue, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, balancer, queue, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

@@ -21,11 +21,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import type { Command } from "@/lib/engine/commands";
 import type { AutoscaleConfig, LbAlgo, Service } from "@/lib/engine/types";
 
-// The numeric fields of AutoscaleConfig (everything except `lb`).
-type NumField = Exclude<keyof AutoscaleConfig, "lb">;
+// The numeric fields of AutoscaleConfig (everything except `lb`, a string, and
+// `enabled`, a boolean: those two have their own controls).
+type NumField = Exclude<keyof AutoscaleConfig, "lb" | "enabled">;
 
 // Field metadata drives both the rendering and the clamping. The bounds mirror
 // the server's `updateAutoscale` so what you see is what will be stored.
@@ -38,18 +40,23 @@ const FIELDS: { key: NumField; label: string; hint: string; min: number; max: nu
   { key: "cooldownTicks", label: "Cooldown (ticks)", hint: "Pause between scale actions", min: 0, max: 120 },
 ];
 
+// These describe what the engine really does (see lib/engine/balancer.ts). The
+// choice only matters once instances differ in size or speed.
 const LB_INFO: Record<LbAlgo, { label: string; blurb: string }> = {
   "round-robin": {
     label: "Round robin",
-    blurb: "Hands requests to each instance in turn, like dealing cards. Simple and even.",
+    blurb:
+      "Equal number of requests to every instance. Ignores instance size and speed, so small or slow instances get overloaded.",
   },
   "least-conn": {
     label: "Least connections",
-    blurb: "Sends each request to the instance with the fewest active connections.",
+    blurb:
+      "Sends traffic where there are the fewest open connections per unit of size. A slow instance holds connections longer, so it automatically gets less.",
   },
   weighted: {
     label: "Weighted",
-    blurb: "Gives bigger instances a larger share of traffic, in proportion to their weight.",
+    blurb:
+      "Traffic proportional to instance size (a 2x instance gets twice as much). Does not notice a slow instance.",
   },
 };
 
@@ -61,6 +68,9 @@ export function ConfigPanel({
   send: (c: Command) => Promise<void>;
 }) {
   const cfg = service.autoscale;
+  // Worlds saved before the switch existed have no `enabled`; they were always
+  // autoscaling, so undefined counts as ON.
+  const autoscaleOn = cfg.enabled !== false;
 
   // One draft string per field, plus which field (if any) currently has focus.
   const [drafts, setDrafts] = useState<Record<NumField, string>>(() => toDrafts(cfg));
@@ -101,6 +111,24 @@ export function ConfigPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
+        <div className="flex items-start gap-3">
+          <Switch
+            id={`${service.id}-autoscale-enabled`}
+            className="mt-0.5"
+            checked={autoscaleOn}
+            onCheckedChange={(on) =>
+              void send({ type: "updateAutoscale", serviceId: service.id, patch: { enabled: on } })
+            }
+          />
+          <div className="space-y-1">
+            <Label htmlFor={`${service.id}-autoscale-enabled`}>Autoscaling</Label>
+            <p className="text-xs text-muted-foreground">
+              Off = hands off: the autoscaler never adds or removes instances, so you can size the
+              fleet yourself with the Add/Remove buttons.
+            </p>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {FIELDS.map((f) => (
             <div key={f.key} className="space-y-1.5">
