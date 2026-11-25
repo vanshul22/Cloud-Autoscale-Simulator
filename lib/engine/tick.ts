@@ -31,6 +31,7 @@ import {
   utilisationPct,
 } from "./metrics";
 import { normalizeQueue, stepQueue } from "./queue";
+import { effectiveBounds } from "./scheduler";
 import { SPIKE_DURATION_TICKS, desiredRps, easeToward } from "./traffic";
 import type { Platform, Service, SimEvent } from "./types";
 
@@ -156,7 +157,7 @@ function tickService(p: Platform, svc: Service): void {
     svc.pattern = "flat"; // a spike is a one-off burst, then back to normal
     log(p, svc.id, "info", "Traffic spike ended; back to baseline.");
   }
-  const desired = desiredRps(svc.pattern, svc.patternTick, svc.targetRps);
+  const desired = desiredRps(svc.pattern, svc.patternTick, svc.targetRps, p.clockMinutes);
   svc.currentRps = easeToward(svc.currentRps, desired);
 
   // ---- 2. INSTANCE LIFECYCLE ----------------------------------------------
@@ -256,11 +257,32 @@ function tickService(p: Platform, svc: Service): void {
   const current = svc.instances.filter(
     (i) => i.status === "healthy" || i.status === "booting",
   ).length;
+  // Scheduled scaling: a schedule window overrides the min/max limits for its hours
+  // (scheduler.ts). The reactive autoscaler then works inside those limits.
+  const bounds = effectiveBounds(svc.schedules, p.clockMinutes, svc.autoscale);
+  const prev = svc.scheduleState ?? { id: null, phase: "off" as const };
+  const nowId = bounds.source?.id ?? null;
+  if (nowId !== prev.id || bounds.phase !== prev.phase) {
+    if (bounds.source) {
+      const what = bounds.phase === "prewarm" ? "pre-warming for" : "started:";
+      log(
+        p,
+        svc.id,
+        "info",
+        `Schedule ${what} "${bounds.source.note || "window"}": instances limited to ${bounds.min}-${bounds.max} (normally ${svc.autoscale.min}-${svc.autoscale.max}).`,
+      );
+    } else if (prev.id) {
+      log(p, svc.id, "info", `Schedule window ended: back to the normal ${svc.autoscale.min}-${svc.autoscale.max} instance limits.`);
+    }
+    svc.scheduleState = { id: nowId, phase: bounds.phase };
+  }
+  const limits = { ...svc.autoscale, min: bounds.min, max: bounds.max };
+
   // Autoscaling can be switched off ("hands off"): then you size the fleet yourself.
   const want =
     svc.autoscale.enabled === false
       ? current
-      : decideDesiredCount(util, current, svc.autoscale, svc.cooldownLeft);
+      : decideDesiredCount(util, current, limits, svc.cooldownLeft);
 
   if (want > current) {
     const add = want - current;
@@ -322,4 +344,13 @@ function tickService(p: Platform, svc: Service): void {
   if (svc.metricsHistory.length > MAX_HISTORY) {
     svc.metricsHistory.splice(0, svc.metricsHistory.length - MAX_HISTORY);
   }
+
+  // Remember what this minute of the day looked like (planned vs actual 24h view).
+  // Created on first use, so worlds saved before this feature simply start filling it.
+  const day = (svc.dayLog ??= {
+    instances: new Array(1440).fill(-1),
+    rps: new Array(1440).fill(-1),
+  });
+  day.instances[p.clockMinutes] = servingInstances(svc.instances).length;
+  day.rps[p.clockMinutes] = Math.round(svc.currentRps);
 }

@@ -13,8 +13,9 @@
 
 import { makeInstance } from "../defaults";
 import { clearFault as clearInstanceFault, normalizeHealth } from "./healing";
-import { clamp } from "./ids";
+import { clamp, shortId } from "./ids";
 import { normalizeQueue } from "./queue";
+import { formatMinute } from "./scheduler";
 import { log } from "./tick";
 import type {
   AutoscaleConfig,
@@ -24,6 +25,7 @@ import type {
   Pattern,
   Platform,
   QueueState,
+  Schedule,
   Service,
 } from "./types";
 
@@ -71,12 +73,46 @@ export type Command =
         >
       >;
     }
+  | {
+      type: "addSchedule";
+      serviceId: string;
+      schedule: Pick<Schedule, "fromMin" | "toMin" | "min" | "max" | "note" | "prewarmMin">;
+    }
+  | {
+      type: "updateSchedule";
+      serviceId: string;
+      scheduleId: string;
+      patch: Partial<Pick<Schedule, "fromMin" | "toMin" | "min" | "max" | "note" | "prewarmMin" | "enabled">>;
+    }
+  | { type: "removeSchedule"; serviceId: string; scheduleId: string }
+  | { type: "moveSchedule"; serviceId: string; scheduleId: string; direction: "up" | "down" } // list order = priority
+  | { type: "setClock"; minutes: number } // jump the simulated clock (0..1439) to watch a window open
   | { type: "replayDlq"; serviceId: string } // put dead-lettered requests back in line
   | { type: "purgeDlq"; serviceId: string } // discard dead-lettered requests
   | { type: "reset" };
 
 export const MAX_RPS = 5000; // hard ceiling so a slider typo can't produce 1e9 RPS
 export const MAX_INSTANCES = 30; // hard ceiling on instances per service
+export const MAX_SCHEDULES = 8; // hard ceiling on schedule windows per service
+const PATTERNS: Pattern[] = ["flat", "spike", "ramp", "sine", "noise", "daily"];
+
+/** Validate and clamp a schedule so the engine never sees nonsense. */
+function cleanSchedule(s: Schedule): Schedule {
+  const min = clamp(Math.round(Number(s.min) || 0), 0, 100);
+  const from = clamp(Math.round(Number(s.fromMin) || 0), 0, 1439);
+  const to = clamp(Math.round(Number(s.toMin) || 0), 0, 1439);
+  if (from === to) throw new Error("A schedule window needs different start and end times.");
+  return {
+    id: s.id,
+    fromMin: from,
+    toMin: to,
+    min,
+    max: clamp(Math.round(Number(s.max) || 0), Math.max(min, 1), 100), // a ceiling can't sit below its floor
+    note: String(s.note ?? "").trim().slice(0, 40) || "schedule",
+    prewarmMin: clamp(Math.round(Number(s.prewarmMin) || 0), 0, 180),
+    enabled: s.enabled === false ? false : true,
+  };
+}
 
 function find(p: Platform, id: string): Service {
   const svc = p.services.find((s) => s.id === id);
@@ -140,6 +176,7 @@ export function applyCommand(p: Platform, cmd: Command): void {
     }
     case "setPattern": {
       const svc = find(p, cmd.serviceId);
+      if (!PATTERNS.includes(cmd.pattern)) throw new Error(`Unknown traffic pattern: ${String(cmd.pattern)}`);
       svc.pattern = cmd.pattern;
       svc.patternTick = 0; // restart the pattern's local clock
       log(p, svc.id, "info", `Traffic pattern: ${cmd.pattern}.`);
@@ -238,6 +275,46 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (patch.circuitEnabled !== undefined) h.circuitEnabled = Boolean(patch.circuitEnabled);
       if (patch.circuitOpenTicks !== undefined) h.circuitOpenTicks = clamp(Math.round(patch.circuitOpenTicks), 2, 60);
       log(p, svc.id, "info", "Reliability settings updated.", "health");
+      return;
+    }
+    case "addSchedule": {
+      const svc = find(p, cmd.serviceId);
+      if (svc.schedules.length >= MAX_SCHEDULES) throw new Error(`A service can have at most ${MAX_SCHEDULES} schedule windows.`);
+      const s = cleanSchedule({ id: shortId("sch"), ...cmd.schedule });
+      svc.schedules.push(s);
+      log(p, svc.id, "info", `Schedule "${s.note}" added: ${formatMinute(s.fromMin)}-${formatMinute(s.toMin)}, ${s.min}-${s.max} instances.`);
+      return;
+    }
+    case "updateSchedule": {
+      const svc = find(p, cmd.serviceId);
+      const i = svc.schedules.findIndex((s) => s.id === cmd.scheduleId);
+      if (i < 0) throw new Error(`Unknown schedule: ${cmd.scheduleId}`);
+      svc.schedules[i] = cleanSchedule({ ...svc.schedules[i], ...cmd.patch });
+      log(p, svc.id, "info", `Schedule "${svc.schedules[i].note}" updated.`);
+      return;
+    }
+    case "removeSchedule": {
+      const svc = find(p, cmd.serviceId);
+      const s = svc.schedules.find((x) => x.id === cmd.scheduleId);
+      if (!s) throw new Error(`Unknown schedule: ${cmd.scheduleId}`);
+      svc.schedules = svc.schedules.filter((x) => x.id !== cmd.scheduleId);
+      log(p, svc.id, "info", `Schedule "${s.note}" removed.`);
+      return;
+    }
+    case "moveSchedule": {
+      const svc = find(p, cmd.serviceId);
+      const i = svc.schedules.findIndex((s) => s.id === cmd.scheduleId);
+      if (i < 0) throw new Error(`Unknown schedule: ${cmd.scheduleId}`);
+      const j = cmd.direction === "up" ? i - 1 : i + 1;
+      if (j < 0 || j >= svc.schedules.length) return; // already at the end of the list
+      [svc.schedules[i], svc.schedules[j]] = [svc.schedules[j], svc.schedules[i]];
+      log(p, svc.id, "info", "Schedule priority changed (the first matching window wins).");
+      return;
+    }
+    case "setClock": {
+      if (!Number.isFinite(cmd.minutes)) throw new Error("minutes must be a number");
+      p.clockMinutes = clamp(Math.round(cmd.minutes), 0, 1439);
+      log(p, "platform", "info", `Simulated clock set to ${formatMinute(p.clockMinutes)}.`);
       return;
     }
     case "updateQueue": {

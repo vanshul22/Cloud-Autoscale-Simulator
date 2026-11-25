@@ -12,7 +12,7 @@
 // =============================================================================
 
 /** How traffic changes over time (the "shape" of load). */
-export type Pattern = "flat" | "spike" | "ramp" | "sine" | "noise";
+export type Pattern = "flat" | "spike" | "ramp" | "sine" | "noise" | "daily";
 
 /** Load-balancing algorithm used to spread requests across instances. */
 export type LbAlgo = "round-robin" | "least-conn" | "weighted";
@@ -108,6 +108,9 @@ export interface Schedule {
   min: number; // min instances to enforce during the window
   max: number; // max instances to allow during the window
   note: string; // human label, e.g. "business hours"
+  // Optional, so schedules saved before these existed still work:
+  prewarmMin?: number; // start this many minutes EARLY, so new instances (3 ticks to boot) are ready when the window opens
+  enabled?: boolean; // false = ignored; undefined counts as on
 }
 
 // -----------------------------------------------------------------------------
@@ -248,6 +251,12 @@ export interface Service {
   autoscale: AutoscaleConfig;
   cooldownLeft: number; // ticks remaining before the autoscaler may act again
   schedules: Schedule[];
+  // Which schedule window was in force last tick, to log only when it CHANGES.
+  scheduleState?: { id: string | null; phase: "active" | "prewarm" | "off" };
+  // What happened at each minute of the simulated day, indexed 0..1439 (-1 = not
+  // seen yet). It fills in as the clock sweeps through the day and is overwritten
+  // the next day, which gives the Scheduled Scaling tab a "planned vs actual" 24h view.
+  dayLog?: { instances: number[]; rps: number[] };
   queue: QueueState;
   health: HealthConfig;
   deployment?: Rollout;

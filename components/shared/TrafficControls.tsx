@@ -28,6 +28,11 @@ const PATTERNS: { id: Pattern; label: string; blurb: string }[] = [
   { id: "ramp", label: "Ramp", blurb: "Traffic climbs gradually from the base load, like a launch or sale starting." },
   { id: "sine", label: "Day/night", blurb: "Smooth wave that rises and falls like daytime and night-time usage." },
   { id: "noise", label: "Noise", blurb: "Random jitter around the base load, like real unpredictable users." },
+  {
+    id: "daily",
+    label: "Daily curve",
+    blurb: "Follows the simulated clock: quiet at night, a daytime peak near 13:00 and an evening peak near 20:30. Pairs with Scheduled Scaling.",
+  },
 ];
 
 const DELTAS = [-100, -10, 10, 100] as const;

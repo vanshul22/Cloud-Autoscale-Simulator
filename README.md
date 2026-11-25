@@ -31,6 +31,8 @@ the alert thresholds) lives in a small, commented TypeScript file.
 - **Break things on purpose**: crash, OOM-kill, slow down or corrupt an instance (or kill half
   the fleet) and watch the platform notice, pull it from nginx, restart it with a doubling
   backoff, give up on a crash loop, and trip a circuit breaker.
+- **Schedule capacity ahead of time**: set busy-hours windows (with optional pre-warm) and watch a
+  whole simulated day, planned limits against actual instances, in about 24 seconds at 60x.
 - **Fast-forward time** (1x / 5x / 60x) and **share a link** to the exact view: the tab,
   service and log filter live in the URL.
 - **Read the docs in the app**: one short page per tab at `/docs`.
@@ -51,6 +53,12 @@ out of nginx and restart it with a doubling backoff.
 
 ![Reliability tab: fleet health with chaos buttons, circuit breaker and settings](docs/images/reliability.png)
 
+The **Scheduled Scaling** tab after one simulated day: the dashed and dotted lines are the
+planned instance limits (stepping up when the business-day window pre-warms at 06:50 and opens
+at 07:00), the solid line is the actual fleet following the clock-driven traffic curve below.
+
+![Scheduled Scaling tab: 24-hour planned limits against actual instances, and traffic](docs/images/scheduled.png)
+
 ## Try it in 30 seconds
 
 1. Open the **Autoscaling Cluster** tab and press **Spike** (or set traffic to 400 req/s).
@@ -62,13 +70,14 @@ out of nginx and restart it with a doubling backoff.
 
 | Area | State |
 |---|---|
-| Overview, Autoscaling Cluster, Queue & Workers and Reliability tabs | Built |
+| Overview, Autoscaling Cluster, Queue & Workers, Reliability and Scheduled Scaling tabs | Built |
+| Scheduled scaling: daily windows (incl. across midnight), pre-warm, priority order, 24-hour planned-vs-actual chart, clock-following traffic curve | Built |
 | Chaos and self-healing: crash/OOM/slow/error faults, health checks, restart with backoff, crash loops, circuit breaker | Built |
 | Autoscaler, traffic patterns, health status, notifications, docs | Built |
 | Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
 | Load balancer: round-robin, weighted and least-connections, with instance sizes, slow instances, and manual add/remove | Built |
-| Deployments, Scheduled Scaling, Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
+| Deployments, Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
 
 ## How it works
 
@@ -141,12 +150,12 @@ app/
   api/control        POST: apply one validated Command
   docs/              the in-app documentation routes
 components/
-  tabs/              Overview, Cluster, Queue, Reliability
+  tabs/              Overview, Cluster, Queue, Reliability, Scheduled
   shared/            traffic controls, charts, instance table, event log, nginx view, config
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, balancer, queue, healing, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

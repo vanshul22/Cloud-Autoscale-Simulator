@@ -29,10 +29,28 @@ const SINE_PERIOD_TICKS = 60;
  * Desired RPS for a pattern at local time `t` (ticks since the pattern started).
  * `base` is the slider value. Always returns >= 0.
  */
-export function desiredRps(pattern: Pattern, t: number, base: number): number {
+export function desiredRps(
+  pattern: Pattern,
+  t: number,
+  base: number,
+  minuteOfDay = 0, // the simulated clock, 0..1439: only the "daily" pattern uses it
+): number {
   switch (pattern) {
     case "flat":
       return base;
+
+    case "daily": {
+      // Traffic that follows the CLOCK (not the time since you pressed the button):
+      // quiet at night, a broad daytime peak around 13:00 and a sharper evening peak
+      // around 20:30. Two bell curves on a night-time floor. This is what makes a
+      // schedule like "business hours need more instances" visibly sensible.
+      const bump = (centre: number, spread: number) => {
+        const d = Math.abs(minuteOfDay - centre);
+        const wrapped = Math.min(d, 1440 - d); // distance on a circle: 23:50 is close to 00:10
+        return Math.exp(-(wrapped * wrapped) / (2 * spread * spread));
+      };
+      return base * (0.25 + 1.1 * bump(13 * 60, 180) + 0.9 * bump(20.5 * 60, 90));
+    }
 
     case "spike": {
       // Sharp rise over 5 ticks, hold at 5x, then decay over the last 10 ticks.

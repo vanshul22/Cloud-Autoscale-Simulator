@@ -254,6 +254,60 @@ export const DOCS: TabDoc[] = [
       { path: "lib/engine/tick.ts", what: "runs the health step each tick" },
     ],
   },
+  {
+    slug: "scheduled",
+    title: "Scheduled Scaling",
+    tagline: "Tell the platform about predictable busy hours so capacity is ready before the traffic is.",
+    tryIt: [
+      "Click Use the daily traffic curve, then add the Business day and Night presets.",
+      "Set the speed to 60x in the header and watch the instances follow the schedule through a whole simulated day (about 24 seconds).",
+      "Add the Flash sale preset, jump the clock to 11:55, and press Spike in the Cluster tab at 12:00. Compare with no schedule.",
+    ],
+    sections: [
+      {
+        heading: "What a schedule does",
+        items: [
+          "A window changes the autoscaler's minimum and maximum instance limits for certain hours. The reactive autoscaler keeps working inside those limits.",
+          "Raising the minimum means capacity is already running when the rush arrives, instead of being added after the slowdown starts.",
+          "Pre-warm starts a window early, so new instances (about 3 ticks to boot) are ready the moment it opens. It helps when a rush is faster than that boot time.",
+          "Windows can cross midnight (23:00 to 07:00).",
+        ],
+      },
+      {
+        heading: "Overlapping windows",
+        items: [
+          "If two windows cover the same minute, the first one in the list wins. Use the arrows to change priority: put a specific window (lunch rush) above a broad one (business day).",
+        ],
+      },
+      {
+        heading: "Reading the 24-hour chart",
+        items: [
+          "Dashed lines are the planned minimum and maximum limits; the solid line is how many healthy instances there actually were at that minute.",
+          "Shaded bands are the schedule windows (lighter = pre-warm). The vertical line is the simulated clock now. The day fills in as the clock moves.",
+          "One tick is one simulated minute: a day takes 24 real minutes at 1x, or about 24 seconds at 60x.",
+        ],
+      },
+      {
+        heading: "What the numbers showed",
+        items: [
+          "In a predictable 5x flash sale at 12:00, reactive autoscaling alone gave a worst-case p95 of about 5.3 seconds (the queue absorbed the burst); a schedule with capacity ready gave about 0.4 seconds.",
+          "Over a smooth full day the saving is small, because the reactive autoscaler keeps up on its own. Schedules matter most for sudden, predictable rushes.",
+        ],
+      },
+      {
+        heading: "Careful",
+        items: [
+          "A limit that is too tight hurts. A night window that starts while the evening peak is still running leaves too few instances and slows everything down.",
+          "Schedules only set limits. If Autoscaling is switched off in the Cluster config, they do nothing.",
+        ],
+      },
+    ],
+    files: [
+      { path: "components/tabs/Scheduled.tsx", what: "this tab" },
+      { path: "lib/engine/scheduler.ts", what: "window maths, overlap rule, next change" },
+      { path: "lib/engine/tick.ts", what: "applies the limits and records the day" },
+    ],
+  },
 ];
 
 export function getDoc(slug: string): TabDoc | undefined {
