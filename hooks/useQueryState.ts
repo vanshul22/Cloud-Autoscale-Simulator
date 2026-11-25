@@ -43,7 +43,12 @@ export function useQueryState<T extends string>(
       const url = new URL(window.location.href);
       if (next === fallback) url.searchParams.delete(key);
       else url.searchParams.set(key, next);
-      window.history.replaceState(window.history.state, "", url);
+      // The state argument MUST be null. Next.js wraps history.replaceState so
+      // that useSearchParams() sees URL changes, but it deliberately skips calls
+      // that carry its own internal marker (the object in window.history.state).
+      // Passing that object back would change the address bar while React never
+      // re-rendered: the tab would not switch. With null, Next syncs it for us.
+      window.history.replaceState(null, "", url);
     },
     [key, fallback],
   );
