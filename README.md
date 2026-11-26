@@ -38,6 +38,8 @@ the alert thresholds) lives in a small, commented TypeScript file.
   and see that only the canary catches it. Go live with new services.
 - **Alert like an on-call team**: rules that must hold for a few ticks before they fire, an SLO
   with an error budget and burn rate, and a filterable event stream you can export.
+- **Tune everything in one place**: presets (cost saver, high availability), "modified" markers
+  against the defaults, and export/import of the whole configuration as a JSON file.
 - **Fast-forward time** (1x / 5x / 60x) and **share a link** to the exact view: the tab,
   service and log filter live in the URL.
 - **Read the docs in the app**: one short page per tab at `/docs`.
@@ -76,6 +78,13 @@ carries a count of firing alerts.
 
 ![Events & Alerts tab: firing alerts, SLO and error budget](docs/images/events.png)
 
+The **Config** tab, the last of the eight: every setting of a service in one place. Here the High
+availability preset has just been applied, so 10 settings show as changed from the defaults; each
+section lists exactly what differs and can be reset on its own, and the whole configuration can be
+exported to and imported from a JSON file.
+
+![Config tab: presets, service details, platform controls and export/import](docs/images/config.png)
+
 ## Try it in 30 seconds
 
 1. Open the **Autoscaling Cluster** tab and press **Spike** (or set traffic to 400 req/s).
@@ -87,7 +96,9 @@ carries a count of firing alerts.
 
 | Area | State |
 |---|---|
-| Overview, Autoscaling Cluster, Queue & Workers, Reliability, Scheduled Scaling, Deployments and Events & Alerts tabs | Built |
+| All eight tabs: Overview, Autoscaling Cluster, Queue & Workers, Reliability, Scheduled Scaling, Deployments, Events & Alerts and Config | Built |
+| Config: every setting in one place with "modified vs default" markers, per-section reset, presets, and validated all-or-nothing export/import of the whole configuration | Built |
+| Input hardening: every command rejects non-numeric values for numeric settings, so a typo or a hostile request cannot corrupt the shared world | Built |
 | Alert rules with a "for" clause (pending, firing, resolved), acknowledge, history; SLO with error budget and burn rate; a filterable, exportable event stream | Built |
 | Deployments: recreate, rolling, blue-green and canary with a health gate, auto/manual rollback, deliberately bad releases, revert, and creating new services ("go live") | Built |
 | Scheduled scaling: daily windows (incl. across midnight), pre-warm, priority order, 24-hour planned-vs-actual chart, clock-following traffic curve | Built |
@@ -96,7 +107,6 @@ carries a count of firing alerts.
 | Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
 | Load balancer: round-robin, weighted and least-connections, with instance sizes, slow instances, and manual add/remove | Built |
-| Config tab | Planned (shown as "soon" in the UI) |
 
 ## How it works
 
@@ -169,12 +179,12 @@ app/
   api/control        POST: apply one validated Command
   docs/              the in-app documentation routes
 components/
-  tabs/              Overview, Cluster, Queue, Reliability, Scheduled, Deployments, Events
+  tabs/              Overview, Cluster, Queue, Reliability, Scheduled, Deployments, Events, Config
   shared/            traffic controls, charts, instance table, event log, nginx view, config
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, deploy, alerts, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, deploy, alerts, config, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

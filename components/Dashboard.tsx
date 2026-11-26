@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AlertTriangle, BookOpen, Cloud, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { Overview } from "@/components/tabs/Overview";
 import { Cluster } from "@/components/tabs/Cluster";
+import { ConfigTab } from "@/components/tabs/Config";
 import { DeploymentsTab } from "@/components/tabs/Deployments";
 import { EventsTab } from "@/components/tabs/Events";
 import { QueueTab } from "@/components/tabs/Queue";
@@ -18,16 +19,11 @@ import { useQueryState } from "@/hooks/useQueryState";
 import { useSoundSetting } from "@/hooks/useSoundSetting";
 import { cn } from "@/lib/utils";
 
-// Tabs that exist in the plan but are not built yet: visible, disabled, hinted.
-const SOON_TABS = [
-  "Config",
-] as const;
-
 const SPEEDS = [1, 5, 60] as const;
 
-// The tabs that are actually built. A URL asking for any other tab (a typo, or a
-// "soon" tab) falls back to Overview instead of showing an empty page.
-const TABS = ["overview", "cluster", "queue", "reliability", "scheduled", "deployments", "events"] as const;
+// The tabs that are actually built. A URL asking for any other tab (a typo) falls
+// back to Overview instead of showing an empty page.
+const TABS = ["overview", "cluster", "queue", "reliability", "scheduled", "deployments", "events", "config"] as const;
 
 /** 0..1439 minutes since midnight -> "HH:MM". */
 function formatClock(mins: number): string {
@@ -207,12 +203,9 @@ export function Dashboard() {
                   </>
                 )}
               </TabsTrigger>
-              {SOON_TABS.map((name) => (
-                <TabsTrigger key={name} value={name} disabled className="gap-1.5">
-                  {name}
-                  <span className="rounded bg-muted px-1 text-[10px] uppercase tracking-wide">soon</span>
-                </TabsTrigger>
-              ))}
+              <TabsTrigger value="config" className="data-[state=active]:bg-accent">
+                Config
+              </TabsTrigger>
             </TabsList>
           </div>
           {/* The doc for whichever tab is open: /docs/overview or /docs/cluster. */}
@@ -244,6 +237,9 @@ export function Dashboard() {
           </TabsContent>
           <TabsContent value="events" className="mt-4">
             <EventsTab platform={platform} serviceId={serviceId} onSelectService={setServiceParam} send={send} />
+          </TabsContent>
+          <TabsContent value="config" className="mt-4">
+            <ConfigTab platform={platform} serviceId={serviceId} onSelectService={setServiceParam} send={send} />
           </TabsContent>
         </Tabs>
       ) : null}

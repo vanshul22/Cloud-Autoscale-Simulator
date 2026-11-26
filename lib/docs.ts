@@ -416,6 +416,53 @@ export const DOCS: TabDoc[] = [
       { path: "lib/engine/tick.ts", what: "records requests and evaluates the rules each tick" },
     ],
   },
+  {
+    slug: "config",
+    title: "Config",
+    tagline: "Every setting of a service in one place, with defaults, presets, and a file you can save and load.",
+    tryIt: [
+      "Apply the High availability preset and watch the Changed settings count. Then use each section's Reset button.",
+      "Export the configuration, change a few settings, then import the file to put them back.",
+      "Edit the cost per instance-hour and watch the cost in the Cluster tab change.",
+    ],
+    sections: [
+      {
+        heading: "One place for everything",
+        items: [
+          "Autoscaling and the load balancer, the queue, reliability and health checks, the SLO target, schedules and the service's name, domain and cost are all here for the selected service.",
+          "Each section shows 'defaults' or how many settings differ ('3 changed'), and lists exactly which, such as 'min 2 -> 4'. Its Reset button puts that section back to the built-in values and keeps what is running: queued requests and live breaker state are not lost.",
+        ],
+      },
+      {
+        heading: "Presets",
+        items: [
+          "Cost saver: few instances that scale up late and down early, a small queue and a looser promise. Cheapest, but slower to absorb a spike.",
+          "High availability: a larger always-on fleet that scales early, fast health checks, a deep queue and a strict promise. Rides out spikes and failures, at a much higher bill.",
+          "A preset is just a list of ordinary changes, so it can only do what the individual controls can do. Back to defaults resets every section.",
+        ],
+      },
+      {
+        heading: "Export and import",
+        items: [
+          "Export downloads the settings as JSON: the services' settings, schedules, alert rules and the simulation speed. It never contains running instances, queues, events or metrics.",
+          "Import reads such a file back. It is checked field by field with the same limits as the controls, and applied all-or-nothing: if anything in the file is invalid, nothing changes and you see the reason.",
+          "Services in the file are matched by id. A service that does not exist here is skipped and counted. Numbers must be real numbers; text where a number belongs is rejected.",
+        ],
+      },
+      {
+        heading: "Why this is safe",
+        items: [
+          "Every command, including import, rejects non-numeric values for numeric settings with a clear message. This also protects the public site: a typo or a hostile request cannot put the simulation into a broken state.",
+          "A configuration file larger than about 60 KB is refused outright.",
+        ],
+      },
+    ],
+    files: [
+      { path: "components/tabs/Config.tsx", what: "this tab" },
+      { path: "lib/engine/config.ts", what: "the exportable settings, defaults and presets" },
+      { path: "lib/engine/commands.ts", what: "updateService, reset, the validated import" },
+    ],
+  },
 ];
 
 export function getDoc(slug: string): TabDoc | undefined {

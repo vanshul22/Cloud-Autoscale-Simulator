@@ -26,7 +26,10 @@ export function makeInstance(version: string, booting = true): Instance {
   };
 }
 
-const defaultAutoscale = (): AutoscaleConfig => ({
+/** What a service costs per instance-hour unless you change it (12 cents, like a small VM). */
+export const DEFAULT_COST_PER_HR = 0.12;
+
+export const defaultAutoscale = (): AutoscaleConfig => ({
   min: 2,
   max: 12,
   rpsPerInstance: 50, // one instance comfortably serves ~50 req/s
@@ -72,7 +75,7 @@ export function makeService(
     queue: defaultQueue(),
     health: defaultHealth(),
     metricsHistory: [],
-    costPerInstanceHr: 0.12, // 12 cents per instance-hour, like a small VM
+    costPerInstanceHr: DEFAULT_COST_PER_HR,
   };
 }
 

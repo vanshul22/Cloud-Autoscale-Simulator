@@ -43,11 +43,17 @@ export function usePlatform() {
   const inFlight = useRef(false); // true while a poll request is pending
   const epoch = useRef(0); // bumped on every send; lets us drop stale poll replies
   const lastActivity = useRef(Date.now()); // last time the user touched the page
+  // When a COMMAND is rejected (bad input, a failed import...) its message must stay on
+  // screen long enough to read. Every successful poll used to wipe it about a second later,
+  // which made the reason for a failure almost impossible to see. Until this moment, polls
+  // leave the error alone; a connection error from polling itself is unaffected.
+  const holdErrorUntil = useRef(0);
+  const ERROR_HOLD_MS = 8000;
 
   const apply = useCallback((snap: Snapshot) => {
     setPlatform(snap.platform);
     setStorage(snap.storage);
-    setError(null);
+    if (Date.now() >= holdErrorUntil.current) setError(null);
   }, []);
 
   const poll = useCallback(async () => {
@@ -115,12 +121,15 @@ export function usePlatform() {
         });
         const data = (await res.json()) as Snapshot | { error: string };
         if ("error" in data) {
+          holdErrorUntil.current = Date.now() + ERROR_HOLD_MS; // keep it readable (see above)
           setError(data.error);
           return;
         }
         epoch.current += 1; // and any poll that started while we waited
+        holdErrorUntil.current = 0; // a command that worked clears any old error
         apply(data);
       } catch (e) {
+        holdErrorUntil.current = Date.now() + ERROR_HOLD_MS;
         setError(e instanceof Error ? e.message : "Command failed");
       }
     },

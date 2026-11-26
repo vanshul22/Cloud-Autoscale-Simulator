@@ -14,6 +14,16 @@
 import { makeInstance, makeService } from "../defaults";
 import { MAX_ALERT_RULES, defaultAlertRules, defaultSlo, describeRule, normalizeAlerts } from "./alerts";
 import { promote, rollbackNow, startDeploy } from "./deploy";
+import {
+  AUTOSCALE_KEYS,
+  CONFIG_FORMAT,
+  CONFIG_VERSION,
+  HEALTH_KEYS,
+  MAX_CONFIG_BYTES,
+  QUEUE_KEYS,
+  serviceDefaults,
+  type ConfigFile,
+} from "./config";
 import { clearFault as clearInstanceFault, normalizeHealth } from "./healing";
 import { clamp, shortId } from "./ids";
 import { normalizeQueue } from "./queue";
@@ -108,6 +118,17 @@ export type Command =
   | { type: "rollbackDeploy"; serviceId: string }
   | { type: "createService"; name: string; domain: string; instances: number } // go live with a new service
   | { type: "deleteService"; serviceId: string }
+  | {
+      type: "updateService"; // rename, re-address or re-price a service
+      serviceId: string;
+      patch: { name?: string; domain?: string; costPerInstanceHr?: number };
+    }
+  | {
+      type: "resetServiceConfig"; // put one section (or everything) back to the built-in defaults
+      serviceId: string;
+      section: "autoscale" | "queue" | "health" | "slo" | "schedules" | "cost" | "all";
+    }
+  | { type: "importConfig"; config: unknown } // load a configuration file (validated, all-or-nothing)
   | { type: "addAlertRule"; rule: Omit<AlertRule, "id" | "enabled"> }
   | {
       type: "updateAlertRule";
@@ -126,11 +147,119 @@ export const MAX_RPS = 5000; // hard ceiling so a slider typo can't produce 1e9 
 export const MAX_INSTANCES = 30; // hard ceiling on instances per service
 export const MAX_SCHEDULES = 8; // hard ceiling on schedule windows per service
 export const MAX_SERVICES = 4; // hard ceiling on services in the whole platform
+const LB_ALGOS: LbAlgo[] = ["round-robin", "least-conn", "weighted"];
 const STRATEGIES: DeployStrategy[] = ["recreate", "rolling", "blue-green", "canary"];
 const BAD_RELEASES: BadRelease[] = ["none", "errors", "slow", "crash"];
 const PATTERNS: Pattern[] = ["flat", "spike", "ramp", "sine", "noise", "daily"];
 
-const METRICS: AlertMetric[] = ["p95", "errRate", "utilisation", "queueDepth", "healthyInstances", "crashLoops", "burnRate"];
+/** A hostname like shop.demo.app: letters, digits, dots and hyphens, at least one dot. */
+const validDomain = (d: string) => /^[a-z0-9]([a-z0-9.-]{0,58}[a-z0-9])?$/.test(d) && d.includes(".");
+
+/** Copy only the NAMED keys (unknown keys, including __proto__, are never read). */
+function pickTyped(src: unknown, keys: readonly string[]): Record<string, number | string | boolean> {
+  const out: Record<string, number | string | boolean> = {};
+  if (!src || typeof src !== "object") return out;
+  for (const k of keys) {
+    const v = (src as Record<string, unknown>)[k];
+    // Keep the value whatever its type: a wrong type (a string where a number belongs, an
+    // object, null) must be REJECTED by the command that receives it, not silently skipped,
+    // so a corrupted file fails loudly instead of half-importing.
+    if (v !== undefined) out[k] = v as number | string | boolean;
+  }
+  return out;
+}
+
+/**
+ * Load a configuration file. It comes from outside (a file or pasted text), so:
+ *   - it is size-limited and must carry our format marker,
+ *   - only KNOWN keys with the right types are read; everything else is ignored,
+ *   - every value goes through the SAME validated commands the individual controls
+ *     use (so the same clamps and rules apply, nothing new to get wrong), and
+ *   - it is applied to a COPY of the world, and committed only if the whole file
+ *     was valid. A bad file changes nothing; it is never half applied.
+ * Only settings change. Running instances, queues, events and metrics are untouched.
+ */
+function importConfig(p: Platform, raw: unknown): void {
+  let size = 0;
+  try {
+    size = JSON.stringify(raw ?? null).length;
+  } catch {
+    throw new Error("That configuration could not be read.");
+  }
+  if (size > MAX_CONFIG_BYTES) throw new Error("That configuration file is too large.");
+  const c = raw as Partial<ConfigFile> | null;
+  if (!c || typeof c !== "object" || c.format !== CONFIG_FORMAT) {
+    throw new Error("This is not a Cloud Autoscale Simulator configuration file.");
+  }
+  if (c.version !== CONFIG_VERSION) throw new Error(`Unsupported configuration version: ${String(c.version)}.`);
+  if (!Array.isArray(c.services) || c.services.length > MAX_SERVICES) {
+    throw new Error(`The configuration needs a list of at most ${MAX_SERVICES} services.`);
+  }
+
+  const draft = structuredClone(p); // all the work happens on this copy
+  const run = (cmd: Command) => applyCommand(draft, cmd);
+  let updated = 0;
+  let skipped = 0;
+
+  for (const sc of c.services) {
+    const svc = draft.services.find((s) => s.id === sc?.id);
+    if (!svc) {
+      skipped++; // a service in the file that does not exist here: ignored, and counted
+      continue;
+    }
+    updated++;
+    const id = svc.id;
+    const details = pickTyped(sc, ["name", "domain", "costPerInstanceHr"]);
+    if (Object.keys(details).length) run({ type: "updateService", serviceId: id, patch: details });
+    const auto = pickTyped(sc.autoscale, AUTOSCALE_KEYS);
+    if (Object.keys(auto).length) run({ type: "updateAutoscale", serviceId: id, patch: auto });
+    const queue = pickTyped(sc.queue, QUEUE_KEYS);
+    if (Object.keys(queue).length) run({ type: "updateQueue", serviceId: id, patch: queue });
+    const health = pickTyped(sc.health, HEALTH_KEYS);
+    if (Object.keys(health).length) run({ type: "updateHealth", serviceId: id, patch: health });
+    if (typeof sc.sloTarget === "number") run({ type: "updateSlo", serviceId: id, target: sc.sloTarget });
+    if (Array.isArray(sc.schedules)) {
+      svc.schedules = [];
+      svc.scheduleState = undefined;
+      for (const s of sc.schedules.slice(0, MAX_SCHEDULES + 1)) {
+        const f = pickTyped(s, ["fromMin", "toMin", "min", "max", "note", "prewarmMin"]);
+        run({ type: "addSchedule", serviceId: id, schedule: f as never });
+        if ((s as { enabled?: boolean })?.enabled === false) {
+          run({ type: "updateSchedule", serviceId: id, scheduleId: svc.schedules.at(-1)!.id, patch: { enabled: false } });
+        }
+      }
+    }
+  }
+
+  let rules = 0;
+  if (Array.isArray(c.alertRules)) {
+    draft.alertRules = [];
+    draft.alerts = [];
+    for (const r of c.alertRules.slice(0, MAX_ALERT_RULES + 1)) {
+      run({ type: "addAlertRule", rule: pickTyped(r, ["name", "metric", "op", "threshold", "forTicks", "severity", "serviceId"]) as never });
+      if ((r as { enabled?: boolean })?.enabled === false) {
+        run({ type: "updateAlertRule", ruleId: draft.alertRules.at(-1)!.id, patch: { enabled: false } });
+      }
+      rules++;
+    }
+  }
+  if (c.speed === 1 || c.speed === 5 || c.speed === 60) run({ type: "setSpeed", speed: c.speed });
+
+  // Everything was valid: commit the copy's SETTINGS back. The events the copy wrote
+  // while validating are thrown away; one summary line replaces them.
+  p.services = draft.services;
+  p.alertRules = draft.alertRules;
+  p.alerts = draft.alerts;
+  p.speed = draft.speed;
+  log(
+    p,
+    "platform",
+    "info",
+    `Configuration imported: ${updated} service(s) updated${skipped ? `, ${skipped} skipped (no matching service id)` : ""}, ${rules} alert rule(s).`,
+  );
+}
+
+const METRICS: AlertMetric[] =["p95", "errRate", "utilisation", "queueDepth", "healthyInstances", "crashLoops", "burnRate"];
 
 /** Validate and clamp an alert rule so the engine never sees nonsense. */
 function cleanRule(p: Platform, r: AlertRule): AlertRule {
@@ -201,8 +330,34 @@ function breakInstance(
   }
 }
 
+// Every field a command can carry that must be a real, finite number. The browser sends
+// JSON, and JSON can hold anything: "banana", null, {}, 1e999. Math.round("banana") is
+// NaN, NaN slips through min/max clamps, and a NaN setting is serialised as null and
+// breaks the simulation for everyone. So we refuse it at the door.
+const NUMERIC_FIELDS = new Set([
+  "rps", "delta", "minutes", "size", "instances", "target", "threshold", "forTicks",
+  "min", "max", "rpsPerInstance", "scaleUpAt", "scaleDownAt", "cooldownTicks",
+  "capacity", "maxWaitTicks", "maxRetries", "retryBackoffTicks",
+  "restartBackoffTicks", "maxRestarts", "errorRateToTrip", "checkFailuresToEject", "readinessLatencyFactor",
+  "faultDurationTicks", "circuitOpenTicks", "costPerInstanceHr",
+  "fromMin", "toMin", "prewarmMin", "stepPct", "holdTicks",
+]);
+
+function assertNumbersAreNumbers(value: unknown, depth = 0): void {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 2) return;
+  for (const [key, v] of Object.entries(value)) {
+    if (NUMERIC_FIELDS.has(key) && v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) {
+      throw new Error(`${key} must be a number.`);
+    }
+    if (v && typeof v === "object") assertNumbersAreNumbers(v, depth + 1);
+  }
+}
+
 /** Mutates `p` in place. Throws Error(message) on invalid input (API maps to 400). */
 export function applyCommand(p: Platform, cmd: Command): void {
+  // importConfig is checked field by field through the commands it runs; a config file
+  // is nested and may legitimately hold numeric-looking keys we do not want to guard here.
+  if (cmd.type !== "importConfig") assertNumbersAreNumbers(cmd);
   switch (cmd.type) {
     case "setTraffic": {
       const svc = find(p, cmd.serviceId);
@@ -257,7 +412,10 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (patch.scaleDownAt !== undefined) a.scaleDownAt = clamp(patch.scaleDownAt, 0, 99);
       if (patch.cooldownTicks !== undefined)
         a.cooldownTicks = clamp(Math.round(patch.cooldownTicks), 0, 120);
-      if (patch.lb !== undefined) a.lb = patch.lb;
+      if (patch.lb !== undefined) {
+        if (!LB_ALGOS.includes(patch.lb)) throw new Error(`Unknown load balancer: ${String(patch.lb)}`);
+        a.lb = patch.lb;
+      }
       if (patch.enabled !== undefined) a.enabled = Boolean(patch.enabled);
       // Keep the config self-consistent so the autoscaler never sees nonsense.
       if (a.min > a.max) a.min = a.max;
@@ -294,6 +452,10 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (!inst) throw new Error(`Unknown instance: ${cmd.instanceId}`);
       if (inst.status !== "healthy") throw new Error("Only a running instance can be hit by chaos.");
       if (inst.fault) throw new Error(`${inst.id} already has a ${inst.fault} fault. Clear it first.`);
+      if (!["crash", "oom", "latency", "errors"].includes(cmd.fault)) throw new Error(`Unknown fault: ${String(cmd.fault)}`);
+      if (cmd.severity !== undefined && (typeof cmd.severity !== "number" || !Number.isFinite(cmd.severity))) {
+        throw new Error("severity must be a number.");
+      }
       breakInstance(p, svc, inst, cmd.fault, cmd.severity, h.faultDurationTicks ?? 40);
       return;
     }
@@ -334,6 +496,50 @@ export function applyCommand(p: Platform, cmd: Command): void {
       log(p, svc.id, "info", "Reliability settings updated.", "health");
       return;
     }
+    case "updateService": {
+      const svc = find(p, cmd.serviceId);
+      const { patch } = cmd;
+      if (patch.name !== undefined) {
+        const name = String(patch.name).trim().slice(0, 30);
+        if (!name) throw new Error("Give the service a name.");
+        svc.name = name;
+      }
+      if (patch.domain !== undefined) {
+        const domain = String(patch.domain).trim().toLowerCase();
+        if (!validDomain(domain)) throw new Error("Enter a domain like shop.demo.app (letters, digits, dots and hyphens).");
+        if (p.services.some((s) => s.id !== svc.id && s.domain === domain)) throw new Error(`${domain} is already used by another service.`);
+        svc.domain = domain;
+      }
+      if (patch.costPerInstanceHr !== undefined) {
+        const cost = Number(patch.costPerInstanceHr);
+        if (!Number.isFinite(cost) || cost < 0) throw new Error("The cost per instance-hour must be zero or more.");
+        svc.costPerInstanceHr = Math.round(Math.min(cost, 10) * 100) / 100;
+      }
+      log(p, svc.id, "info", `Service details updated for ${svc.name}.`);
+      return;
+    }
+    case "resetServiceConfig": {
+      const svc = find(p, cmd.serviceId);
+      const d = serviceDefaults();
+      const all = cmd.section === "all";
+      if (!all && !["autoscale", "queue", "health", "slo", "schedules", "cost"].includes(cmd.section)) {
+        throw new Error(`Unknown section: ${String(cmd.section)}`);
+      }
+      if (all || cmd.section === "autoscale") svc.autoscale = { ...d.autoscale };
+      if (all || cmd.section === "queue") svc.queue = { ...normalizeQueue(svc.queue), ...d.queue }; // keeps the waiting requests
+      if (all || cmd.section === "health") svc.health = { ...normalizeHealth(svc.health), ...d.health } as HealthConfig; // keeps live breaker state
+      if (all || cmd.section === "slo") (svc.slo ??= defaultSlo()).target = d.sloTarget;
+      if (all || cmd.section === "schedules") {
+        svc.schedules = [];
+        svc.scheduleState = undefined;
+      }
+      if (all || cmd.section === "cost") svc.costPerInstanceHr = d.costPerInstanceHr;
+      log(p, svc.id, "info", `${all ? "All settings" : `The ${cmd.section} settings`} of ${svc.name} reset to the defaults.`);
+      return;
+    }
+    case "importConfig":
+      importConfig(p, cmd.config);
+      return;
     case "addAlertRule": {
       normalizeAlerts(p);
       if (p.alertRules!.length >= MAX_ALERT_RULES) throw new Error(`At most ${MAX_ALERT_RULES} alert rules.`);
@@ -407,9 +613,7 @@ export function applyCommand(p: Platform, cmd: Command): void {
       const name = String(cmd.name ?? "").trim().slice(0, 30);
       if (!name) throw new Error("Give the service a name.");
       const domain = String(cmd.domain ?? "").trim().toLowerCase();
-      if (!/^[a-z0-9]([a-z0-9.-]{0,58}[a-z0-9])?$/.test(domain) || !domain.includes(".")) {
-        throw new Error("Enter a domain like shop.demo.app (letters, digits, dots and hyphens).");
-      }
+      if (!validDomain(domain)) throw new Error("Enter a domain like shop.demo.app (letters, digits, dots and hyphens).");
       if (p.services.some((s) => s.domain === domain)) throw new Error(`${domain} is already used by another service.`);
       const count = clamp(Math.round(Number(cmd.instances) || 1), 1, 6);
       // A unique id from the name: "My API" -> "my-api", then "my-api-2" if taken.

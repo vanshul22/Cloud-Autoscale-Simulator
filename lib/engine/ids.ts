@@ -12,7 +12,13 @@ export function randInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-/** Clamp n into [lo, hi]. */
+/**
+ * Clamp n into [lo, hi]. NaN (a number that is not a number, e.g. from Math.round("abc"))
+ * would sail straight through Math.max/min and poison whatever it is stored in, so it
+ * becomes `lo` instead. Commands also reject non-numeric input up front (commands.ts);
+ * this is the safety net underneath.
+ */
 export function clamp(n: number, lo: number, hi: number): number {
+  if (Number.isNaN(n)) return lo;
   return Math.max(lo, Math.min(hi, n));
 }
