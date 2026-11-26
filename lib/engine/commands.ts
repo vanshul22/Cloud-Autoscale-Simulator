@@ -12,6 +12,7 @@
 // =============================================================================
 
 import { makeInstance, makeService } from "../defaults";
+import { MAX_ALERT_RULES, defaultAlertRules, defaultSlo, describeRule, normalizeAlerts } from "./alerts";
 import { promote, rollbackNow, startDeploy } from "./deploy";
 import { clearFault as clearInstanceFault, normalizeHealth } from "./healing";
 import { clamp, shortId } from "./ids";
@@ -19,6 +20,8 @@ import { normalizeQueue } from "./queue";
 import { formatMinute } from "./scheduler";
 import { log } from "./tick";
 import type {
+  AlertMetric,
+  AlertRule,
   AutoscaleConfig,
   BadRelease,
   DeployStrategy,
@@ -105,6 +108,16 @@ export type Command =
   | { type: "rollbackDeploy"; serviceId: string }
   | { type: "createService"; name: string; domain: string; instances: number } // go live with a new service
   | { type: "deleteService"; serviceId: string }
+  | { type: "addAlertRule"; rule: Omit<AlertRule, "id" | "enabled"> }
+  | {
+      type: "updateAlertRule";
+      ruleId: string;
+      patch: Partial<Pick<AlertRule, "name" | "threshold" | "forTicks" | "severity" | "enabled" | "op" | "metric" | "serviceId">>;
+    }
+  | { type: "removeAlertRule"; ruleId: string }
+  | { type: "resetAlertRules" } // restore the built-in rules
+  | { type: "ackAlert"; alertId: string } // "I'm on it": marks a firing alert acknowledged
+  | { type: "updateSlo"; serviceId: string; target: number } // availability promise, in %
   | { type: "replayDlq"; serviceId: string } // put dead-lettered requests back in line
   | { type: "purgeDlq"; serviceId: string } // discard dead-lettered requests
   | { type: "reset" };
@@ -116,6 +129,29 @@ export const MAX_SERVICES = 4; // hard ceiling on services in the whole platform
 const STRATEGIES: DeployStrategy[] = ["recreate", "rolling", "blue-green", "canary"];
 const BAD_RELEASES: BadRelease[] = ["none", "errors", "slow", "crash"];
 const PATTERNS: Pattern[] = ["flat", "spike", "ramp", "sine", "noise", "daily"];
+
+const METRICS: AlertMetric[] = ["p95", "errRate", "utilisation", "queueDepth", "healthyInstances", "crashLoops", "burnRate"];
+
+/** Validate and clamp an alert rule so the engine never sees nonsense. */
+function cleanRule(p: Platform, r: AlertRule): AlertRule {
+  if (!METRICS.includes(r.metric)) throw new Error(`Unknown metric: ${String(r.metric)}`);
+  if (r.op !== ">" && r.op !== "<") throw new Error("The comparison must be > or <.");
+  if (r.severity !== "warning" && r.severity !== "critical") throw new Error("Severity is warning or critical.");
+  const threshold = Number(r.threshold);
+  if (!Number.isFinite(threshold)) throw new Error("The threshold must be a number.");
+  if (r.serviceId !== "*" && !p.services.some((s) => s.id === r.serviceId)) throw new Error(`Unknown service: ${r.serviceId}`);
+  return {
+    id: r.id,
+    name: String(r.name ?? "").trim().slice(0, 40) || "Alert",
+    metric: r.metric,
+    op: r.op,
+    threshold: Math.max(-1e6, Math.min(1e6, threshold)),
+    forTicks: clamp(Math.round(Number(r.forTicks) || 1), 1, 120),
+    severity: r.severity,
+    serviceId: r.serviceId,
+    enabled: r.enabled !== false,
+  };
+}
 
 /** Validate and clamp a schedule so the engine never sees nonsense. */
 function cleanSchedule(s: Schedule): Schedule {
@@ -296,6 +332,53 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (patch.circuitEnabled !== undefined) h.circuitEnabled = Boolean(patch.circuitEnabled);
       if (patch.circuitOpenTicks !== undefined) h.circuitOpenTicks = clamp(Math.round(patch.circuitOpenTicks), 2, 60);
       log(p, svc.id, "info", "Reliability settings updated.", "health");
+      return;
+    }
+    case "addAlertRule": {
+      normalizeAlerts(p);
+      if (p.alertRules!.length >= MAX_ALERT_RULES) throw new Error(`At most ${MAX_ALERT_RULES} alert rules.`);
+      const rule = cleanRule(p, { id: shortId("rule"), enabled: true, ...cmd.rule });
+      p.alertRules!.push(rule);
+      log(p, "platform", "info", `Alert rule added: ${rule.name} (${describeRule(rule)}).`, "alert");
+      return;
+    }
+    case "updateAlertRule": {
+      normalizeAlerts(p);
+      const i = p.alertRules!.findIndex((r) => r.id === cmd.ruleId);
+      if (i < 0) throw new Error(`Unknown alert rule: ${cmd.ruleId}`);
+      p.alertRules![i] = cleanRule(p, { ...p.alertRules![i], ...cmd.patch });
+      log(p, "platform", "info", `Alert rule updated: ${p.alertRules![i].name} (${describeRule(p.alertRules![i])}).`, "alert");
+      return;
+    }
+    case "removeAlertRule": {
+      normalizeAlerts(p);
+      const r = p.alertRules!.find((x) => x.id === cmd.ruleId);
+      if (!r) throw new Error(`Unknown alert rule: ${cmd.ruleId}`);
+      p.alertRules = p.alertRules!.filter((x) => x.id !== cmd.ruleId);
+      log(p, "platform", "info", `Alert rule removed: ${r.name}.`, "alert");
+      return;
+    }
+    case "resetAlertRules": {
+      p.alertRules = defaultAlertRules();
+      p.alerts = [];
+      log(p, "platform", "info", "Alert rules restored to the defaults.", "alert");
+      return;
+    }
+    case "ackAlert": {
+      normalizeAlerts(p);
+      const a = p.alerts!.find((x) => x.id === cmd.alertId);
+      if (!a) throw new Error("That alert is no longer active.");
+      if (a.state !== "firing") throw new Error("Only a firing alert can be acknowledged.");
+      a.acked = true;
+      log(p, a.serviceId, "info", `Alert acknowledged: ${p.alertRules!.find((r) => r.id === a.ruleId)?.name ?? a.ruleId}.`, "alert");
+      return;
+    }
+    case "updateSlo": {
+      const svc = find(p, cmd.serviceId);
+      const target = Number(cmd.target);
+      if (!Number.isFinite(target) || target < 50 || target > 99.999) throw new Error("An SLO target is a percentage between 50 and 99.999.");
+      (svc.slo ??= defaultSlo()).target = target;
+      log(p, svc.id, "info", `SLO for ${svc.name} set to ${target}% availability.`, "alert");
       return;
     }
     case "startDeploy": {

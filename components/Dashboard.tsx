@@ -5,6 +5,7 @@ import { AlertTriangle, BookOpen, Cloud, RotateCcw, Volume2, VolumeX } from "luc
 import { Overview } from "@/components/tabs/Overview";
 import { Cluster } from "@/components/tabs/Cluster";
 import { DeploymentsTab } from "@/components/tabs/Deployments";
+import { EventsTab } from "@/components/tabs/Events";
 import { QueueTab } from "@/components/tabs/Queue";
 import { ReliabilityTab } from "@/components/tabs/Reliability";
 import { ScheduledTab } from "@/components/tabs/Scheduled";
@@ -19,7 +20,6 @@ import { cn } from "@/lib/utils";
 
 // Tabs that exist in the plan but are not built yet: visible, disabled, hinted.
 const SOON_TABS = [
-  "Events & Alerts",
   "Config",
 ] as const;
 
@@ -27,7 +27,7 @@ const SPEEDS = [1, 5, 60] as const;
 
 // The tabs that are actually built. A URL asking for any other tab (a typo, or a
 // "soon" tab) falls back to Overview instead of showing an empty page.
-const TABS = ["overview", "cluster", "queue", "reliability", "scheduled", "deployments"] as const;
+const TABS = ["overview", "cluster", "queue", "reliability", "scheduled", "deployments", "events"] as const;
 
 /** 0..1439 minutes since midnight -> "HH:MM". */
 function formatClock(mins: number): string {
@@ -46,6 +46,8 @@ export function Dashboard() {
   const [tab, setTab] = useQueryState("tab", "overview", TABS);
   const [serviceParam, setServiceParam] = useQueryState<string>("service", "");
   const serviceId = serviceParam || null; // "" (no param) means "first service"
+  // How many alerts are FIRING right now (pending ones are not worth a badge); shown on the Events tab.
+  const firingCount = platform?.alerts?.filter((a) => a.state === "firing").length ?? 0;
 
   function selectService(id: string) {
     setServiceParam(id);
@@ -162,8 +164,11 @@ export function Dashboard() {
       ) : platform ? (
         <Tabs value={tab} onValueChange={setTab}>
           <div className="flex items-center justify-between gap-3">
-          {/* Horizontal scroll *inside* this strip keeps the page itself from scrolling sideways on phones. */}
-          <div className="-mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          {/* Horizontal scroll *inside* this strip keeps the page itself from scrolling sideways on phones.
+              `relative` matters: an absolutely-positioned child (the screen-reader-only text in the
+              firing-alerts badge) is only clipped by a scroller that is ITS containing block. Without
+              it that text sits past the end of the long tab list and stretches the whole page wider. */}
+          <div className="relative -mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
             <TabsList className="h-auto w-max justify-start gap-1 bg-transparent p-0">
               <TabsTrigger value="overview" className="data-[state=active]:bg-accent">
                 Overview
@@ -182,6 +187,25 @@ export function Dashboard() {
               </TabsTrigger>
               <TabsTrigger value="deployments" className="data-[state=active]:bg-accent">
                 Deployments
+              </TabsTrigger>
+              <TabsTrigger value="events" className="data-[state=active]:bg-accent">
+                Events &amp; Alerts
+                {/* Count of FIRING alerts, shown only when there are some. The number is
+                    visual (aria-hidden); the sr-only sentence is what is announced, so
+                    the meaning is never carried by the red colour alone. */}
+                {firingCount > 0 && (
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="ml-1.5 min-w-[1.25rem] rounded-full bg-destructive px-1.5 text-center text-[11px] font-semibold tabular-nums text-destructive-foreground"
+                    >
+                      {firingCount}
+                    </span>
+                    <span className="sr-only">
+                      {firingCount} firing alert{firingCount === 1 ? "" : "s"}
+                    </span>
+                  </>
+                )}
               </TabsTrigger>
               {SOON_TABS.map((name) => (
                 <TabsTrigger key={name} value={name} disabled className="gap-1.5">
@@ -217,6 +241,9 @@ export function Dashboard() {
           </TabsContent>
           <TabsContent value="deployments" className="mt-4">
             <DeploymentsTab platform={platform} serviceId={serviceId} onSelectService={setServiceParam} send={send} />
+          </TabsContent>
+          <TabsContent value="events" className="mt-4">
+            <EventsTab platform={platform} serviceId={serviceId} onSelectService={setServiceParam} send={send} />
           </TabsContent>
         </Tabs>
       ) : null}

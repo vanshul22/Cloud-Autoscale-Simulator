@@ -36,6 +36,8 @@ the alert thresholds) lives in a small, commented TypeScript file.
 - **Ship a new version four ways**: recreate, rolling, blue-green or canary, with a health gate and
   rollback. Deploy a deliberately sneaky bug (it passes health checks but fails real requests)
   and see that only the canary catches it. Go live with new services.
+- **Alert like an on-call team**: rules that must hold for a few ticks before they fire, an SLO
+  with an error budget and burn rate, and a filterable event stream you can export.
 - **Fast-forward time** (1x / 5x / 60x) and **share a link** to the exact view: the tab,
   service and log filter live in the URL.
 - **Read the docs in the app**: one short page per tab at `/docs`.
@@ -68,6 +70,12 @@ rolled back at 10% of traffic. Rolling, blue-green and recreate would all have s
 
 ![Deployments tab: four strategies, deploy history and the go-live form](docs/images/deployments.png)
 
+The **Events & Alerts** tab under a sustained overload: alerts move from pending to firing once their
+"for" time has passed, the SLO shows the error budget spent and a 13.5x burn rate, and the tab itself
+carries a count of firing alerts.
+
+![Events & Alerts tab: firing alerts, SLO and error budget](docs/images/events.png)
+
 ## Try it in 30 seconds
 
 1. Open the **Autoscaling Cluster** tab and press **Spike** (or set traffic to 400 req/s).
@@ -79,7 +87,8 @@ rolled back at 10% of traffic. Rolling, blue-green and recreate would all have s
 
 | Area | State |
 |---|---|
-| Overview, Autoscaling Cluster, Queue & Workers, Reliability, Scheduled Scaling and Deployments tabs | Built |
+| Overview, Autoscaling Cluster, Queue & Workers, Reliability, Scheduled Scaling, Deployments and Events & Alerts tabs | Built |
+| Alert rules with a "for" clause (pending, firing, resolved), acknowledge, history; SLO with error budget and burn rate; a filterable, exportable event stream | Built |
 | Deployments: recreate, rolling, blue-green and canary with a health gate, auto/manual rollback, deliberately bad releases, revert, and creating new services ("go live") | Built |
 | Scheduled scaling: daily windows (incl. across midnight), pre-warm, priority order, 24-hour planned-vs-actual chart, clock-following traffic curve | Built |
 | Chaos and self-healing: crash/OOM/slow/error faults, health checks, restart with backoff, crash loops, circuit breaker | Built |
@@ -87,7 +96,7 @@ rolled back at 10% of traffic. Rolling, blue-green and recreate would all have s
 | Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
 | Load balancer: round-robin, weighted and least-connections, with instance sizes, slow instances, and manual add/remove | Built |
-| Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
+| Config tab | Planned (shown as "soon" in the UI) |
 
 ## How it works
 
@@ -160,12 +169,12 @@ app/
   api/control        POST: apply one validated Command
   docs/              the in-app documentation routes
 components/
-  tabs/              Overview, Cluster, Queue, Reliability, Scheduled, Deployments
+  tabs/              Overview, Cluster, Queue, Reliability, Scheduled, Deployments, Events
   shared/            traffic controls, charts, instance table, event log, nginx view, config
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, deploy, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, deploy, alerts, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

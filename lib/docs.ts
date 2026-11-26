@@ -365,6 +365,57 @@ export const DOCS: TabDoc[] = [
       { path: "lib/engine/tick.ts", what: "runs the rollout each tick and routes canary traffic" },
     ],
   },
+  {
+    slug: "events",
+    title: "Events & Alerts",
+    tagline: "Decide when a human should be told, and measure whether you are keeping your promise to users.",
+    tryIt: [
+      "In the Cluster config set Max instances to 2, then push traffic to 160 req/s. Watch Slow responses and Capacity nearly full go pending, then firing, then High error rate. Acknowledge one.",
+      "Set Capacity nearly full to 'for 1 tick' and it fires at once; set it back to 5 and it takes longer. That is the 'for' clause.",
+      "Raise the SLO target to 99.9 and watch the error budget shrink.",
+    ],
+    sections: [
+      {
+        heading: "Alert rules",
+        items: [
+          "A rule watches one number (p95 latency, error rate, utilisation, queue depth, healthy instances, crash-looping instances or error-budget burn rate), compares it with a threshold, and has a severity.",
+          "A rule must hold for its 'for' time before it fires. Until then the alert is pending. This is why one unlucky slow tick never pages anyone.",
+          "When the condition clears, the alert resolves and moves to the history. Each change of state writes one event.",
+          "Acknowledge a firing alert to say 'I'm on it'. It keeps firing, but it is marked as seen.",
+          "Rules can apply to every service or just one. Six sensible rules are built in, and you can edit, add or remove them.",
+        ],
+      },
+      {
+        heading: "SLO and error budget",
+        items: [
+          "An SLO is a promise such as '99.5% of requests succeed'. The error budget is the failures you can afford: 0.5% of requests.",
+          "Availability is measured over the last 600 ticks. The budget bar shows how much of the allowed failures is left.",
+          "Burn rate is how fast the budget is being spent. 1x is exactly on budget; at 3x it runs out three times too soon. The page also estimates how many ticks are left at the current rate.",
+          "Alerting on burn rate means you act when users are being hurt faster than you can afford, not on every blip.",
+        ],
+      },
+      {
+        heading: "The event stream",
+        items: [
+          "Every event the platform writes is here: scaling, health checks, deployments, alerts, schedule windows. The log keeps the latest 120.",
+          "Filter by service, level, category or text. The filters are kept in the page address, so a refresh keeps them and a link shares them.",
+          "Export JSON downloads exactly the events you are looking at.",
+        ],
+      },
+      {
+        heading: "Known limits",
+        items: [
+          "Alerts are silent in the sense that they do not pop up or play a sound; the traffic-light notifications (red, yellow, green) are separate and still do. The tab shows a count of firing alerts.",
+          "The request counts behind the SLO are simulated from the traffic model, not measured from real requests.",
+        ],
+      },
+    ],
+    files: [
+      { path: "components/tabs/Events.tsx", what: "this tab" },
+      { path: "lib/engine/alerts.ts", what: "rules, the pending/firing lifecycle, SLO maths" },
+      { path: "lib/engine/tick.ts", what: "records requests and evaluates the rules each tick" },
+    ],
+  },
 ];
 
 export function getDoc(slug: string): TabDoc | undefined {

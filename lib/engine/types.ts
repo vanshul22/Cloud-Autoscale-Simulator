@@ -276,7 +276,73 @@ export interface SimEvent {
   // Reliability tab's timeline but are NOT pop-ups: toasts only show "status".
   // "deploy" marks a step in a rollout (a batch started, the health gate, a rollback);
   // it feeds the Deployments tab's timeline. Also not a pop-up.
-  kind?: "status" | "health" | "deploy";
+  kind?: "status" | "health" | "deploy" | "alert";
+}
+
+// -----------------------------------------------------------------------------
+// Alerting: rules that watch the numbers, and the alerts they raise.
+// -----------------------------------------------------------------------------
+
+/** The numbers an alert rule can watch (see alerts.ts `readMetric`). */
+export type AlertMetric =
+  | "p95" // p95 latency, ms
+  | "errRate" // error rate, %
+  | "utilisation" // fleet utilisation, %
+  | "queueDepth" // requests waiting in the queue
+  | "healthyInstances" // instances in rotation
+  | "crashLoops" // instances stuck crash-looping
+  | "burnRate"; // how fast the error budget is being spent (1 = exactly on budget)
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  metric: AlertMetric;
+  op: ">" | "<";
+  threshold: number;
+  forTicks: number; // the condition must hold this many ticks in a row before it FIRES
+  severity: "warning" | "critical";
+  serviceId: string; // a service id, or "*" for every service
+  enabled: boolean;
+}
+
+/** An alert that is currently pending (condition true, not yet long enough) or firing. */
+export interface AlertState {
+  id: string; // `${ruleId}:${serviceId}`
+  ruleId: string;
+  serviceId: string;
+  state: "pending" | "firing";
+  since: number; // tick the condition first held
+  value: number; // the latest reading of the watched metric
+  acked?: boolean; // someone has acknowledged it ("I'm on it"); it keeps firing
+  firedAt?: number; // tick it went from pending to firing
+  peak?: number; // the worst reading seen while it was firing
+}
+
+/** A finished alert, kept for the history table. */
+export interface AlertRecord {
+  ruleName: string;
+  serviceId: string;
+  severity: "warning" | "critical";
+  firedAt: number;
+  resolvedAt: number;
+  peak: number; // the worst reading while it was firing
+}
+
+/**
+ * A rolling record of requests, for the SLO. Kept as 60 buckets of 10 ticks each
+ * (a 600-tick window) so it stays small: `id[i]` says which 10-tick period bucket i
+ * currently holds, and a stale bucket is reset when its slot comes round again.
+ */
+export interface SloLog {
+  total: number[];
+  failed: number[];
+  id: number[];
+}
+
+/** A service's reliability promise, e.g. "99.5% of requests succeed". */
+export interface Slo {
+  target: number; // availability target in percent, e.g. 99.5
+  log: SloLog;
 }
 
 // -----------------------------------------------------------------------------
@@ -312,6 +378,7 @@ export interface Service {
   deployHistory?: DeployRecord[]; // newest first, capped
   // true while a brand-new service is being brought up for the first time ("go live").
   provisioning?: boolean;
+  slo?: Slo; // availability promise + rolling request log (alerts.ts)
 
   // The service's traffic-light health: "ok" (green) | "warning" (yellow) |
   // "critical" (red). We remember the last value so we can notify exactly once
@@ -338,6 +405,11 @@ export interface Platform {
   clockMinutes: number; // simulated time-of-day, 0..1439, for schedules
   services: Service[];
   events: SimEvent[]; // global stream, newest first, capped
+  // Alerting (optional: worlds saved before the Events & Alerts tab lack these and
+  // alerts.ts fills them in with defaults on the first tick).
+  alertRules?: AlertRule[];
+  alerts?: AlertState[]; // currently pending or firing
+  alertHistory?: AlertRecord[]; // newest first, capped
 }
 
 /** A read-only snapshot the API returns to the browser. Same shape today, but

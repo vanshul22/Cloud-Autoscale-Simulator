@@ -21,6 +21,7 @@
 import { makeInstance } from "../defaults";
 import { decideDesiredCount } from "./autoscaler";
 import { distributeTraffic } from "./balancer";
+import { evaluateAlerts as evaluateAlertRules, recordSlo } from "./alerts";
 import { stepDeployment } from "./deploy";
 import { admitFraction, faultFailures, instanceFailures, normalizeHealth, stepHealth } from "./healing";
 import {
@@ -79,6 +80,8 @@ export function tickOnce(p: Platform): void {
   // 1 tick = 1 simulated minute, so a whole day is 1440 ticks (24s at 60x speed).
   p.clockMinutes = (p.clockMinutes + 1) % 1440;
   for (const svc of p.services) tickService(p, svc);
+  // Alert rules look at every service's fresh numbers, so they run after all of them.
+  evaluateAlertRules(p, (serviceId, level, msg) => log(p, serviceId, level, msg, "alert"));
 }
 
 // ----------------------------------------------------------------------------
@@ -403,4 +406,7 @@ function tickService(p: Platform, svc: Service): void {
   });
   day.instances[p.clockMinutes] = servingInstances(svc.instances).length;
   day.rps[p.clockMinutes] = Math.round(svc.currentRps);
+
+  // The SLO's rolling log: how many requests there were, and how many failed.
+  recordSlo(svc, p.tick, svc.currentRps, (errRate / 100) * svc.currentRps);
 }
