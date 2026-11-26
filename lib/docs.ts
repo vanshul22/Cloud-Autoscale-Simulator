@@ -308,6 +308,63 @@ export const DOCS: TabDoc[] = [
       { path: "lib/engine/tick.ts", what: "applies the limits and records the day" },
     ],
   },
+  {
+    slug: "deployments",
+    title: "Deployments",
+    tagline: "Ship a new version four different ways, and see which one actually protects your users.",
+    tryIt: [
+      "Deploy a Healthy build with Rolling, then with Blue-green. Watch the fleet strip change from v1 to v2, and watch the cost.",
+      "Deploy a Sneaky bug with Rolling. It passes every health check and ships to everyone. Revert, then try Canary and watch it get caught at 10%.",
+      "Pick Recreate and note the downtime while the new instances boot.",
+    ],
+    sections: [
+      {
+        heading: "The four strategies",
+        items: [
+          "Recreate: stop everything, start the new version. Simplest and cheapest, but the service is down while it boots.",
+          "Rolling: replace a batch at a time, retiring old instances only after the new ones are ready. No downtime, and a broken build is caught on the first batch.",
+          "Blue-green: start a full second fleet idle, then switch all traffic at once. Instant cutover, but you pay for two fleets while it runs.",
+          "Canary: send 10%, then 50%, then 100% of real traffic to the new version while watching its error rate. Smallest blast radius, and the slowest.",
+        ],
+      },
+      {
+        heading: "Health gate and rollback",
+        items: [
+          "A new instance only counts once it is ready: running and passing its health checks for a few ticks in a row. If the new instances are not ready before the deadline, the gate fails.",
+          "A failed gate rolls back automatically (if that is switched on): the new instances are removed and the old version is brought back to full strength. You can also roll back or promote by hand.",
+          "The autoscaler pauses during a rollout so it does not fight the changes.",
+        ],
+      },
+      {
+        heading: "What the experiments showed",
+        items: [
+          "A healthy release: Recreate had about 2 ticks of downtime; Rolling had none but took the longest of the three fast options; Blue-green switched instantly but ran 8 instances instead of 4 for a while; Canary was slowest but safest.",
+          "A sneaky bug (passes health checks, fails 30% of real requests): Recreate, Rolling and Blue-green all shipped it to everyone, with 18%, 14% and 6% of requests failing during the rollout and 30% afterwards. Canary caught it at 10% traffic, lost about 0.5% of requests, and rolled back.",
+          "Slow or crashing builds fail their health checks, so Rolling, Blue-green and Canary all reject them. Recreate has nothing left to fall back on.",
+          "The lesson: health checks prove a build starts. Only watching real traffic proves it works.",
+        ],
+      },
+      {
+        heading: "Go live with a new service",
+        items: [
+          "Create a service with a name, a domain and a starting number of instances. It provisions, boots, and goes live; you get a notification when it does.",
+          "A new service has no traffic yet. Select it in the Cluster tab and set its traffic. You can run up to 4 services, and shut one down with its button.",
+        ],
+      },
+      {
+        heading: "Known limits",
+        items: [
+          "Build quality (healthy, sneaky bug, slow, crashing) is simulated and chosen by you when you deploy.",
+          "Blue-green retires the old fleet at cutover, so there is no standing rollback window. Use Revert to go back to the previous version.",
+        ],
+      },
+    ],
+    files: [
+      { path: "components/tabs/Deployments.tsx", what: "this tab" },
+      { path: "lib/engine/deploy.ts", what: "the four strategies, the health gate, rollback" },
+      { path: "lib/engine/tick.ts", what: "runs the rollout each tick and routes canary traffic" },
+    ],
+  },
 ];
 
 export function getDoc(slug: string): TabDoc | undefined {

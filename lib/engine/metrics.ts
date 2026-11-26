@@ -9,9 +9,13 @@
 import { clamp } from "./ids";
 import type { Instance, Service } from "./types";
 
-/** Instances that are actually allowed to receive traffic. */
+/**
+ * Instances that are actually allowed to receive traffic: healthy AND not on
+ * standby (the idle "green" fleet of a blue-green deployment is warm but not in the
+ * nginx upstream until the cutover).
+ */
 export function servingInstances(instances: Instance[]): Instance[] {
-  return instances.filter((i) => i.status === "healthy");
+  return instances.filter((i) => i.status === "healthy" && !i.standby);
 }
 
 /** How many req/s ONE instance can serve: its size times the standard capacity. */

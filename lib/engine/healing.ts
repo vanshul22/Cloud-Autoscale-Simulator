@@ -116,13 +116,14 @@ export function clearFault(inst: Instance): void {
  * This is the error burst you see before health checks react.
  */
 export function faultFailures(serving: Instance[], rpsPerInstance: number): number {
-  let failed = 0;
-  for (const inst of serving) {
-    const handled = Math.min(inst.rps, instanceCapacityRps(inst, rpsPerInstance));
-    const share = isDead(inst) ? 1 : inst.fault === "errors" ? (inst.errorFraction ?? 0) : 0;
-    failed += handled * share;
-  }
-  return failed;
+  return serving.reduce((sum, inst) => sum + instanceFailures(inst, rpsPerInstance), 0);
+}
+
+/** The failures for ONE instance (a dead one fails everything it is sent). */
+export function instanceFailures(inst: Instance, rpsPerInstance: number): number {
+  const handled = Math.min(inst.rps, instanceCapacityRps(inst, rpsPerInstance));
+  const share = isDead(inst) ? 1 : inst.fault === "errors" ? (inst.errorFraction ?? 0) : 0;
+  return handled * share;
 }
 
 /** Advance the circuit breaker, then every instance's health state, by one tick. */
@@ -199,13 +200,36 @@ function stepInstance(inst: Instance, h: HealthConfig, emit: Emit): void {
   }
 }
 
+/**
+ * A BUGGY build misbehaves the moment it is running, and keeps doing so after every
+ * restart (the bug is in the code, not the machine). We express that as a permanent
+ * fault, so the ordinary health checks, ejection and restart machinery deal with it.
+ */
+function applyBuggyBuild(inst: Instance): void {
+  if (!inst.buggy || inst.fault) return;
+  if (inst.buggy === "errors") {
+    inst.fault = "errors";
+    // Deliberately BELOW the readiness threshold (50%): the build passes its health
+    // checks and gets in rotation, then quietly fails a third of real requests.
+    inst.errorFraction = 0.3;
+  } else if (inst.buggy === "slow") {
+    inst.fault = "latency";
+    inst.latencyFactor = 8; // past the default readiness threshold of 6
+  } else {
+    inst.fault = "crash";
+  }
+  // faultTicksLeft stays undefined: unlike a chaos fault this never expires by itself.
+}
+
 /** An in-rotation instance: run its health checks and let temporary faults expire. */
 function checkRunning(inst: Instance, h: HealthConfig, emit: Emit): void {
+  applyBuggyBuild(inst);
   const need = h.checkFailuresToEject ?? 2;
 
   // ---- LIVENESS: is the process alive at all? -------------------------------
   if (isDead(inst)) {
     inst.stableTicks = 0;
+    inst.passingTicks = 0;
     inst.failedChecks = (inst.failedChecks ?? 0) + 1;
     const cause = inst.fault === "oom" ? "was OOM-killed" : "crashed";
     if (inst.failedChecks === 1) {
@@ -232,8 +256,10 @@ function checkRunning(inst: Instance, h: HealthConfig, emit: Emit): void {
   // ---- READINESS: alive, but fit to serve traffic? --------------------------
   const tooSlow = (inst.latencyFactor ?? 1) >= (h.readinessLatencyFactor ?? 6);
   const tooManyErrors = (inst.errorFraction ?? 0) >= READINESS_ERROR_FRACTION;
+  if (!tooSlow && !tooManyErrors) inst.passingTicks = (inst.passingTicks ?? 0) + 1; // passing its checks
   if (tooSlow || tooManyErrors) {
     inst.stableTicks = 0;
+    inst.passingTicks = 0;
     inst.failedChecks = (inst.failedChecks ?? 0) + 1;
     if (inst.failedChecks >= need) {
       inst.failedChecks = 0;
@@ -282,6 +308,7 @@ function checkRestart(inst: Instance, h: HealthConfig, emit: Emit): void {
   inst.bootTicksLeft = BOOT_TICKS;
   inst.downReason = undefined;
   inst.stableTicks = 0;
+  inst.passingTicks = 0;
   emit("info", `${inst.id} restarted (restart ${inst.restartCount} of ${h.maxRestarts}); warming up.`);
 }
 

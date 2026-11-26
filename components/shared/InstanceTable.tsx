@@ -148,6 +148,12 @@ export function InstanceTable({
                         <Badge variant="outline" className={cn("capitalize", STATUS_STYLE[inst.status])}>
                           {inst.status}
                         </Badge>
+                        {/* Blue-green's green fleet: warm and billed, but not in rotation yet. */}
+                        {inst.standby && (
+                          <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
+                            standby (idle)
+                          </span>
+                        )}
                         {/* Text, not just colour, so slowness is readable by everyone. */}
                         {slow > 1 && (
                           <span className="whitespace-nowrap text-xs font-medium text-orange-700 dark:text-orange-400">

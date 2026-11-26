@@ -64,6 +64,15 @@ export interface Instance {
   // sets it. Optional: instances saved before this field existed count as 1.
   latencyFactor?: number;
 
+  // --- Deployments (optional: older saved worlds lack them) ---
+  // true = booted and warm but NOT in the nginx upstream yet. This is the "green"
+  // fleet of a blue-green deployment: it costs money while idle, and takes no traffic
+  // until the cutover.
+  standby?: boolean;
+  // The quality of the version this instance runs (see BadRelease). Unlike a chaos
+  // fault, it survives restarts: restarting a buggy build gives you a buggy build.
+  buggy?: "errors" | "slow" | "crash";
+
   // When chaos injects a fault we remember it so the tick can act on it.
   //   crash / oom : the process is dead. Until health checks notice, the load
   //                 balancer keeps sending it traffic and every request fails.
@@ -77,6 +86,10 @@ export interface Instance {
   failedChecks?: number; // consecutive failed health checks
   restartCount?: number; // restarts since the last stable period (drives the backoff)
   stableTicks?: number; // consecutive healthy ticks; long enough resets restartCount
+  // Consecutive ticks the instance has PASSED its health checks while running. A new
+  // instance counts as "ready" for a deployment only after a few of these (deploy.ts).
+  // Unlike stableTicks it keeps counting through a mild fault that still passes checks.
+  passingTicks?: number;
   downReason?: string; // why it is out of rotation, shown in the UI
 }
 
@@ -186,14 +199,48 @@ export interface HealthConfig {
 // -----------------------------------------------------------------------------
 // Rollout: present on a service only while a deployment is in progress.
 // -----------------------------------------------------------------------------
+// A new version can be deliberately BROKEN, to show which strategies contain the
+// damage:
+//   errors : the sneaky one. It PASSES its health checks but fails 30% of real
+//            requests. Only watching real traffic (a canary) catches it.
+//   slow   : answers 8x slower, so it fails its readiness check
+//   crash  : crashes again every time it starts, so it fails its liveness check
+export type BadRelease = "none" | "errors" | "slow" | "crash";
+
 export interface Rollout {
   strategy: DeployStrategy;
   fromVersion: string;
   toVersion: string;
-  stepPct: number; // how much traffic/instances to shift per step (canary/rolling)
-  progressPct: number; // 0..100, how far the rollout has advanced
+  stepPct: number; // rolling: batch size as % of the fleet; canary: the current traffic share
+  progressPct: number; // 0..100, how much of the fleet is on the new version and ready
   phase: "progressing" | "awaiting-approval" | "succeeded" | "rolled-back";
-  newHealthyPct: number; // health of the new version so far (drives the gate)
+  newHealthyPct: number; // share of the new version's instances that passed the health gate
+
+  startedTick: number;
+  targetCount: number; // how many instances the service should end up with
+  bad: BadRelease; // the (simulated) quality of the new version
+  holdTicks: number; // canary: how long to watch each step before moving on
+  autoPromote: boolean; // false = pause for your approval at each gate
+  autoRollback: boolean; // true = a failed health gate rolls back by itself
+  deadlineTicks: number; // how long new instances get to become ready before the gate fails
+  stepStartedTick: number; // when the current batch / step began
+  readySinceTick?: number; // canary: when the new instances all became ready (starts the hold)
+  trafficPctToNew: number; // canary: the share of traffic sent to the new version
+  newErrPct: number; // canary: error rate among requests the new version served last tick
+  rollingBack: boolean; // true while undoing the deployment
+  note: string; // one plain-English line about what is happening right now
+}
+
+/** One finished deployment, kept for the history table. */
+export interface DeployRecord {
+  from: string;
+  to: string;
+  strategy: DeployStrategy;
+  bad: BadRelease;
+  outcome: "succeeded" | "rolled-back";
+  startedTick: number;
+  endedTick: number;
+  reason: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -227,7 +274,9 @@ export interface SimEvent {
   // "health" marks a step in a failure/recovery story (a check failed, an instance
   // was pulled from nginx, a restart, the breaker opening). They feed the
   // Reliability tab's timeline but are NOT pop-ups: toasts only show "status".
-  kind?: "status" | "health";
+  // "deploy" marks a step in a rollout (a batch started, the health gate, a rollback);
+  // it feeds the Deployments tab's timeline. Also not a pop-up.
+  kind?: "status" | "health" | "deploy";
 }
 
 // -----------------------------------------------------------------------------
@@ -260,6 +309,9 @@ export interface Service {
   queue: QueueState;
   health: HealthConfig;
   deployment?: Rollout;
+  deployHistory?: DeployRecord[]; // newest first, capped
+  // true while a brand-new service is being brought up for the first time ("go live").
+  provisioning?: boolean;
 
   // The service's traffic-light health: "ok" (green) | "warning" (yellow) |
   // "critical" (red). We remember the last value so we can notify exactly once

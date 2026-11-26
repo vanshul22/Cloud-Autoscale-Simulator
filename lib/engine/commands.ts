@@ -11,7 +11,8 @@
 // bottom of the switch will tell you if you forget one.
 // =============================================================================
 
-import { makeInstance } from "../defaults";
+import { makeInstance, makeService } from "../defaults";
+import { promote, rollbackNow, startDeploy } from "./deploy";
 import { clearFault as clearInstanceFault, normalizeHealth } from "./healing";
 import { clamp, shortId } from "./ids";
 import { normalizeQueue } from "./queue";
@@ -19,6 +20,8 @@ import { formatMinute } from "./scheduler";
 import { log } from "./tick";
 import type {
   AutoscaleConfig,
+  BadRelease,
+  DeployStrategy,
   HealthConfig,
   Instance,
   LbAlgo,
@@ -87,6 +90,21 @@ export type Command =
   | { type: "removeSchedule"; serviceId: string; scheduleId: string }
   | { type: "moveSchedule"; serviceId: string; scheduleId: string; direction: "up" | "down" } // list order = priority
   | { type: "setClock"; minutes: number } // jump the simulated clock (0..1439) to watch a window open
+  | {
+      type: "startDeploy"; // ship the next version with a strategy
+      serviceId: string;
+      strategy: DeployStrategy;
+      toVersion?: string; // omit for the next version; set e.g. "v1" to revert to an earlier one
+      bad?: BadRelease; // simulate a faulty release to see how the strategy copes
+      stepPct?: number; // rolling: batch size as % of the fleet
+      holdTicks?: number; // canary: how long to watch each step
+      autoPromote?: boolean; // false = pause for approval at each gate
+      autoRollback?: boolean; // true = a failed health gate rolls back by itself
+    }
+  | { type: "promoteDeploy"; serviceId: string } // pass the current gate (cutover / widen the canary)
+  | { type: "rollbackDeploy"; serviceId: string }
+  | { type: "createService"; name: string; domain: string; instances: number } // go live with a new service
+  | { type: "deleteService"; serviceId: string }
   | { type: "replayDlq"; serviceId: string } // put dead-lettered requests back in line
   | { type: "purgeDlq"; serviceId: string } // discard dead-lettered requests
   | { type: "reset" };
@@ -94,6 +112,9 @@ export type Command =
 export const MAX_RPS = 5000; // hard ceiling so a slider typo can't produce 1e9 RPS
 export const MAX_INSTANCES = 30; // hard ceiling on instances per service
 export const MAX_SCHEDULES = 8; // hard ceiling on schedule windows per service
+export const MAX_SERVICES = 4; // hard ceiling on services in the whole platform
+const STRATEGIES: DeployStrategy[] = ["recreate", "rolling", "blue-green", "canary"];
+const BAD_RELEASES: BadRelease[] = ["none", "errors", "slow", "crash"];
 const PATTERNS: Pattern[] = ["flat", "spike", "ramp", "sine", "noise", "daily"];
 
 /** Validate and clamp a schedule so the engine never sees nonsense. */
@@ -275,6 +296,60 @@ export function applyCommand(p: Platform, cmd: Command): void {
       if (patch.circuitEnabled !== undefined) h.circuitEnabled = Boolean(patch.circuitEnabled);
       if (patch.circuitOpenTicks !== undefined) h.circuitOpenTicks = clamp(Math.round(patch.circuitOpenTicks), 2, 60);
       log(p, svc.id, "info", "Reliability settings updated.", "health");
+      return;
+    }
+    case "startDeploy": {
+      const svc = find(p, cmd.serviceId);
+      if (!STRATEGIES.includes(cmd.strategy)) throw new Error(`Unknown deployment strategy: ${String(cmd.strategy)}`);
+      if (cmd.bad !== undefined && !BAD_RELEASES.includes(cmd.bad)) throw new Error(`Unknown release quality: ${String(cmd.bad)}`);
+      if (cmd.toVersion !== undefined) {
+        if (!/^v\d{1,3}$/.test(cmd.toVersion)) throw new Error("A version looks like v1, v2, v3...");
+        if (cmd.toVersion === svc.version) throw new Error(`The service is already running ${svc.version}.`);
+      }
+      startDeploy(svc, p.tick, cmd, (level, msg) => log(p, svc.id, level, msg, "deploy"));
+      return;
+    }
+    case "promoteDeploy": {
+      const svc = find(p, cmd.serviceId);
+      promote(svc, p.tick, (level, msg) => log(p, svc.id, level, msg, "deploy"));
+      return;
+    }
+    case "rollbackDeploy": {
+      const svc = find(p, cmd.serviceId);
+      rollbackNow(svc, p.tick, (level, msg) => log(p, svc.id, level, msg, "deploy"));
+      return;
+    }
+    case "createService": {
+      if (p.services.length >= MAX_SERVICES) throw new Error(`The platform can run at most ${MAX_SERVICES} services.`);
+      const name = String(cmd.name ?? "").trim().slice(0, 30);
+      if (!name) throw new Error("Give the service a name.");
+      const domain = String(cmd.domain ?? "").trim().toLowerCase();
+      if (!/^[a-z0-9]([a-z0-9.-]{0,58}[a-z0-9])?$/.test(domain) || !domain.includes(".")) {
+        throw new Error("Enter a domain like shop.demo.app (letters, digits, dots and hyphens).");
+      }
+      if (p.services.some((s) => s.domain === domain)) throw new Error(`${domain} is already used by another service.`);
+      const count = clamp(Math.round(Number(cmd.instances) || 1), 1, 6);
+      // A unique id from the name: "My API" -> "my-api", then "my-api-2" if taken.
+      const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "service";
+      let id = base;
+      for (let n = 2; p.services.some((s) => s.id === id); n++) id = `${base}-${n}`;
+
+      const svc = makeService(id, name, domain, 0);
+      svc.instances = Array.from({ length: count }, () => makeInstance("v1", true)); // booting, not yet serving
+      svc.autoscale.min = Math.min(svc.autoscale.min, count);
+      svc.status = "deploying";
+      svc.provisioning = true;
+      svc.targetRps = 0; // nobody is sending traffic yet; you do that in the Cluster tab
+      svc.currentRps = 0;
+      p.services.push(svc);
+      log(p, id, "info", `Going live: provisioning ${name} (${domain}) with ${count} instance(s).`, "deploy");
+      return;
+    }
+    case "deleteService": {
+      if (p.services.length <= 1) throw new Error("The platform needs at least one service.");
+      const svc = find(p, cmd.serviceId);
+      p.services = p.services.filter((s) => s.id !== svc.id);
+      log(p, "platform", "info", `Service ${svc.name} (${svc.domain}) was shut down and removed.`, "deploy");
       return;
     }
     case "addSchedule": {

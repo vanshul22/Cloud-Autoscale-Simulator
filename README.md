@@ -33,6 +33,9 @@ the alert thresholds) lives in a small, commented TypeScript file.
   backoff, give up on a crash loop, and trip a circuit breaker.
 - **Schedule capacity ahead of time**: set busy-hours windows (with optional pre-warm) and watch a
   whole simulated day, planned limits against actual instances, in about 24 seconds at 60x.
+- **Ship a new version four ways**: recreate, rolling, blue-green or canary, with a health gate and
+  rollback. Deploy a deliberately sneaky bug (it passes health checks but fails real requests)
+  and see that only the canary catches it. Go live with new services.
 - **Fast-forward time** (1x / 5x / 60x) and **share a link** to the exact view: the tab,
   service and log filter live in the URL.
 - **Read the docs in the app**: one short page per tab at `/docs`.
@@ -59,6 +62,12 @@ at 07:00), the solid line is the actual fleet following the clock-driven traffic
 
 ![Scheduled Scaling tab: 24-hour planned limits against actual instances, and traffic](docs/images/scheduled.png)
 
+The **Deployments** tab after two rollouts: a healthy build shipped with a rolling deployment, then a
+"sneaky bug" (passes health checks, fails 30% of real requests) that only the canary caught and
+rolled back at 10% of traffic. Rolling, blue-green and recreate would all have shipped it to everyone.
+
+![Deployments tab: four strategies, deploy history and the go-live form](docs/images/deployments.png)
+
 ## Try it in 30 seconds
 
 1. Open the **Autoscaling Cluster** tab and press **Spike** (or set traffic to 400 req/s).
@@ -70,14 +79,15 @@ at 07:00), the solid line is the actual fleet following the clock-driven traffic
 
 | Area | State |
 |---|---|
-| Overview, Autoscaling Cluster, Queue & Workers, Reliability and Scheduled Scaling tabs | Built |
+| Overview, Autoscaling Cluster, Queue & Workers, Reliability, Scheduled Scaling and Deployments tabs | Built |
+| Deployments: recreate, rolling, blue-green and canary with a health gate, auto/manual rollback, deliberately bad releases, revert, and creating new services ("go live") | Built |
 | Scheduled scaling: daily windows (incl. across midnight), pre-warm, priority order, 24-hour planned-vs-actual chart, clock-following traffic curve | Built |
 | Chaos and self-healing: crash/OOM/slow/error faults, health checks, restart with backoff, crash loops, circuit breaker | Built |
 | Autoscaler, traffic patterns, health status, notifications, docs | Built |
 | Request queue: overflow waits, timeouts, retries with backoff, dead-letter queue, HTTP 429 | Built |
 | Shared live state (Upstash Redis) and safe concurrent updates | Built |
 | Load balancer: round-robin, weighted and least-connections, with instance sizes, slow instances, and manual add/remove | Built |
-| Deployments, Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
+| Events & Alerts, Config tabs | Planned (shown as "soon" in the UI) |
 
 ## How it works
 
@@ -150,12 +160,12 @@ app/
   api/control        POST: apply one validated Command
   docs/              the in-app documentation routes
 components/
-  tabs/              Overview, Cluster, Queue, Reliability, Scheduled
+  tabs/              Overview, Cluster, Queue, Reliability, Scheduled, Deployments
   shared/            traffic controls, charts, instance table, event log, nginx view, config
   ui/                shadcn/ui primitives
 hooks/               polling, URL-backed state, toasts, sound
 lib/
-  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, traffic, metrics, nginx, commands
+  engine/            types, tick, autoscaler, balancer, queue, healing, scheduler, deploy, traffic, metrics, nginx, commands
   store.ts           memory locally, Upstash in production (compare-and-set saves)
   docs.ts            the content of the in-app docs
 ```

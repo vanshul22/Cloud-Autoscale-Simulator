@@ -21,7 +21,8 @@
 import { makeInstance } from "../defaults";
 import { decideDesiredCount } from "./autoscaler";
 import { distributeTraffic } from "./balancer";
-import { admitFraction, faultFailures, normalizeHealth, stepHealth } from "./healing";
+import { stepDeployment } from "./deploy";
+import { admitFraction, faultFailures, instanceFailures, normalizeHealth, stepHealth } from "./healing";
 import {
   capacityRps,
   errorRatePct,
@@ -33,9 +34,11 @@ import {
 import { normalizeQueue, stepQueue } from "./queue";
 import { effectiveBounds } from "./scheduler";
 import { SPIKE_DURATION_TICKS, desiredRps, easeToward } from "./traffic";
-import type { Platform, Service, SimEvent } from "./types";
+import type { Instance, Platform, Service, SimEvent } from "./types";
 
-const MAX_EVENTS = 200; // keep the global log bounded
+// Keep the global log bounded. The whole world is saved to Redis on every tick, so
+// every event costs bandwidth on the free plan; 120 is plenty to read back through.
+const MAX_EVENTS = 120;
 const MAX_HISTORY = 120; // ~2 minutes of chart data at 1 tick/sec
 const MAX_CATCHUP_TICKS = 300; // never simulate more than this in one request
 
@@ -76,6 +79,29 @@ export function tickOnce(p: Platform): void {
   // 1 tick = 1 simulated minute, so a whole day is 1440 ticks (24s at 60x speed).
   p.clockMinutes = (p.clockMinutes + 1) % 1440;
   for (const svc of p.services) tickService(p, svc);
+}
+
+// ----------------------------------------------------------------------------
+// Split the incoming traffic across the serving instances.
+//
+// Normally the load balancer (balancer.ts) shares it across everything. During a
+// CANARY deployment, though, the new version gets a fixed SHARE of the traffic
+// (10%, then 50%...) no matter how many instances it has, and the old version gets
+// the rest. That is what limits the blast radius of a bad release.
+// ----------------------------------------------------------------------------
+function routeTraffic(svc: Service, serving: Instance[], total: number): void {
+  const { lb, rpsPerInstance } = svc.autoscale;
+  const d = svc.deployment;
+  if (!d || d.strategy !== "canary" || d.rollingBack) {
+    distributeTraffic(serving, total, lb, rpsPerInstance);
+    return;
+  }
+  const canary = serving.filter((i) => i.version === d.toVersion);
+  const stable = serving.filter((i) => i.version !== d.toVersion);
+  // Until a canary instance is actually serving, everything goes to the stable fleet.
+  const share = canary.length === 0 ? 0 : stable.length === 0 ? 1 : d.trafficPctToNew / 100;
+  distributeTraffic(canary, total * share, lb, rpsPerInstance);
+  distributeTraffic(stable, total * (1 - share), lb, rpsPerInstance);
 }
 
 // ----------------------------------------------------------------------------
@@ -187,6 +213,15 @@ function tickService(p: Platform, svc: Service): void {
   stepHealth(svc, (level, msg) => log(p, svc.id, level, msg, "health"));
   const admit = admitFraction(svc.health); // 1 = all traffic, 0 = breaker open
 
+  // ---- 2c. DEPLOYMENT ------------------------------------------------------
+  // A rollout in progress (deploy.ts): start batches, check the health gate,
+  // promote or roll back. Also finishes bringing a brand-new service live.
+  stepDeployment(svc, p.tick, (level, msg) => log(p, svc.id, level, msg, "deploy"));
+  if (svc.provisioning && svc.instances.length > 0 && svc.instances.every((i) => i.status === "healthy")) {
+    svc.provisioning = false;
+    log(p, svc.id, "info", `${svc.name} is live at https://${svc.domain}.`, "status");
+  }
+
   // ---- 3. DISTRIBUTE -------------------------------------------------------
   // The load balancer decides how much each healthy instance is ASSIGNED
   // (balancer.ts). An instance can be assigned more than it can serve; that
@@ -197,7 +232,7 @@ function tickService(p: Platform, svc: Service): void {
     inst.rps = 0;
     inst.conns = 0;
   }
-  distributeTraffic(serving, svc.currentRps * admit, svc.autoscale.lb, svc.autoscale.rpsPerInstance);
+  routeTraffic(svc, serving, svc.currentRps * admit);
   // What the instances can really serve directly: each one tops out at its own capacity.
   const servedDirect = serving.reduce(
     (sum, i) => sum + Math.min(i.rps, instanceCapacityRps(i, svc.autoscale.rpsPerInstance)),
@@ -208,6 +243,18 @@ function tickService(p: Platform, svc: Service): void {
   // breaker refused outright. Both count as failures in the error rate.
   svc.health.faultFailedNow = Math.round(faultFailures(serving, svc.autoscale.rpsPerInstance));
   svc.health.shedNow = Math.round(svc.currentRps * (1 - admit));
+
+  // What the canary's users are experiencing: the failure rate among the requests the
+  // NEW version served. This is the health gate's main signal (deploy.ts).
+  if (svc.deployment) {
+    const mine = serving.filter((i) => i.version === svc.deployment!.toVersion);
+    const handled = mine.reduce(
+      (s, i) => s + Math.min(i.rps, instanceCapacityRps(i, svc.autoscale.rpsPerInstance)),
+      0,
+    );
+    const failed = mine.reduce((s, i) => s + instanceFailures(i, svc.autoscale.rpsPerInstance), 0);
+    svc.deployment.newErrPct = handled > 0 ? (failed / handled) * 100 : 0;
+  }
 
   // ---- 3b. QUEUE -----------------------------------------------------------
   // Demand above capacity waits in the queue (or is rejected if it is full);
@@ -279,8 +326,10 @@ function tickService(p: Platform, svc: Service): void {
   const limits = { ...svc.autoscale, min: bounds.min, max: bounds.max };
 
   // Autoscaling can be switched off ("hands off"): then you size the fleet yourself.
+  // The autoscaler also pauses during a deployment: it would otherwise see the
+  // temporary extra instances and fight the rollout.
   const want =
-    svc.autoscale.enabled === false
+    svc.autoscale.enabled === false || svc.deployment
       ? current
       : decideDesiredCount(util, current, limits, svc.cooldownLeft);
 
@@ -328,7 +377,8 @@ function tickService(p: Platform, svc: Service): void {
       ? Math.min(100, ((q.rejectedNow + q.failedNow + (svc.health.faultFailedNow ?? 0)) / admitted) * 100)
       : 0;
   const p95 = p95LatencyMs(svc);
-  svc.status = errRate > 5 || util > 100 ? "degraded" : "live";
+  svc.status =
+    errRate > 5 || util > 100 ? "degraded" : svc.deployment || svc.provisioning ? "deploying" : "live";
   evaluateAlerts(p, svc, errRate, p95, util);
   svc.metricsHistory.push({
     t: p.tick,
